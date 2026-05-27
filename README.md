@@ -72,6 +72,28 @@ dist/extension/assets/tokenizer/tokenizer.json
 
 The stable runtime filename is `v5-full.onnx`; this file contains the final/latest validated v7-lineage export.
 
+## API example
+
+The repo also includes a tiny Express service in `examples/express-service/` for people who want to run the ONNX model behind their own API instead of inside Chrome. It uses `onnxruntime-node`, the same tokenizer, and the same metadata preprocessing as the extension.
+
+```bash
+npm run download:model
+cd examples/express-service
+npm install
+npm run build
+npm start
+```
+
+Then score text with:
+
+```bash
+curl -s http://localhost:8787/score \
+  -H 'content-type: application/json' \
+  -d '{"text":"I built a tiny local model that tells you when your tweet is probably dead.","metadata":{"hasMedia":false}}'
+```
+
+This is only an example wrapper. The Chrome extension still runs locally and does not call this API.
+
 ## Development
 
 ```bash
@@ -106,6 +128,7 @@ extension/                     original MV3 entrypoints, popup, icons, page list
 src/                           original DOM detection, scoring UI, guardrails, runtime contracts
 scripts/build-extension.mjs    original extension build script
 scripts/download-hf-assets.mjs Hugging Face model/tokenizer downloader
+examples/express-service/      optional Node.js API wrapper for the ONNX model
 fixtures/                      local X-like fixture pages for tests
 tests/                         original unit/integration tests
 MODEL_CARD.md                  Hugging Face model documentation

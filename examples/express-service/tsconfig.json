@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "skipLibCheck": true,
+    "outDir": "dist",
+    "rootDir": "../..",
+    "types": ["node"]
+  },
+  "include": [
+    "server.ts",
+    "../../src/contracts.ts",
+    "../../src/inference-runtime.ts",
+    "../../src/local-tokenizer.ts",
+    "../../src/scoring-guardrails.ts"
+  ]
+}
