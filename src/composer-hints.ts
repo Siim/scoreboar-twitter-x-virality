@@ -333,7 +333,8 @@ const setPanelState = (panel: HTMLElement, state: ComposerPanelState, valueText:
   panel.hidden = state === "empty"
   panel.setAttribute(SCOREBOAR_COMPOSER_PANEL_STATE_ATTRIBUTE, state)
   const displayText = composerPanelValueText(panel, state, valueText)
-  panel.setAttribute("aria-label", displayText)
+  const visibleHintText = hints.slice(0, 1).map((hint) => hint.message).join(" ")
+  panel.setAttribute("aria-label", visibleHintText ? `${displayText}. ${visibleHintText}` : displayText)
 
   const value = panel.querySelector<HTMLElement>(".scoreboar-composer-panel__value")
   if (value) {
@@ -346,6 +347,8 @@ const setPanelState = (panel: HTMLElement, state: ComposerPanelState, valueText:
       const item = panel.ownerDocument.createElement("li")
       item.className = "scoreboar-composer-panel__hint"
       item.textContent = hint.message
+      item.title = hint.message
+      item.setAttribute("aria-label", hint.message)
       item.setAttribute("data-scoreboar-composer-hint-id", hint.id)
       return item
     }))
