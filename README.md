@@ -2,6 +2,8 @@
 
 Scoreboar is the original local-first Chrome MV3 extension that adds compact scoring labels to X/Twitter timeline posts and lightweight hints while drafting a post. This public package uses the same extension scripts, DOM detection, popup, icons, styles, and build pipeline as the working private extension; the only publishing-specific addition is a Hugging Face download script for the large ONNX model assets.
 
+![Scoreboar composer scoring hint inside the X/Twitter post composer](docs/assets/scoreboar-composer-screenshot.png)
+
 ## What it does
 
 - Adds one compact badge per detected `article[data-testid="tweet"]` on `https://x.com/*` and `https://twitter.com/*`.
