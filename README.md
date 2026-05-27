@@ -115,9 +115,17 @@ npm run assert:no-remote-assets
   - **~50K viral/high-engagement posts**.
   - **~10K random/baseline posts**.
   - Refreshed with recent posts from roughly the **last 18 months**.
-- Grok/teacher enrichment targets: **12 numeric scores**, **5 boolean flags**, and **3 categorical labels**.
+- Grok/teacher enrichment targets: **20 total auxiliary targets**: **12 numeric scores**, **5 boolean flags**, and **3 categorical labels**.
 - Runtime/browser ONNX exposes the 5-way outcome head plus **12 numeric** and **5 boolean** feature heads.
 - Validation snapshot: `58.73%` exact 5-bucket accuracy and `98.34%` within ±1 bucket.
+
+Enriched shape, in plain terms:
+
+- **Inputs at runtime**: post text plus **12 metadata values**: `has_media`, `created_at_hour_sin`, `created_at_hour_cos`, `created_at_day_sin`, `created_at_day_cos`, `log_author_followers`, `log_author_following`, `log_author_tweets`, `author_verified`, `hashtag_count`, `mention_count`, `url_count`.
+- **Main output**: 5 performance buckets: `very_low`, `low`, `medium`, `high`, `very_high`.
+- **Auxiliary numeric outputs**: `virality_score`, `hook_quality`, `clarity_score`, `novelty_score`, `emotional_intensity`, `controversy_level`, `shareability_score`, `conversation_potential`, `authenticity_score`, `urgency_level`, `call_to_action_strength`, `trend_alignment`.
+- **Auxiliary boolean outputs**: `is_rage_bait`, `is_clickbait`, `is_ai_slop`, `needs_context`, `has_clear_takeaway`.
+- **Categorical labels used during training**: `primary_emotion`, `target_audience`, `content_type`. These were training supervision; the browser runtime does not need to show them.
 
 See `MODEL_CARD.md` for the full model card.
 

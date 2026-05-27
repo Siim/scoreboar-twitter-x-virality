@@ -74,6 +74,64 @@ Scoreboar fine-tunes a shared ModernBERT text encoder, fuses the pooled text rep
 - **3 categorical teacher heads** were part of training supervision: `primary_emotion`, `target_audience`, and `content_type`.
 - **12 model metadata inputs** are derived from 10 raw metadata fields: media flag, time, author/account context, and entity counts.
 
+The enriched training shape has three separate parts:
+
+### Runtime inputs
+
+The model receives tokenized post text plus this **12-value metadata vector**:
+
+1. `has_media`
+2. `created_at_hour_sin`
+3. `created_at_hour_cos`
+4. `created_at_day_sin`
+5. `created_at_day_cos`
+6. `log_author_followers`
+7. `log_author_following`
+8. `log_author_tweets`
+9. `author_verified`
+10. `hashtag_count`
+11. `mention_count`
+12. `url_count`
+
+These come from 10 raw metadata fields before transforms: `has_media`, `created_at_hour`, `created_at_day`, `author_followers`, `author_following`, `author_tweets`, `author_verified`, `hashtag_count`, `mention_count`, and `url_count`.
+
+### Teacher/enrichment targets
+
+The model was supervised with **20 auxiliary teacher targets**:
+
+Numeric targets, normalized from 0-10 to 0-1 during training:
+
+1. `virality_score`
+2. `hook_quality`
+3. `clarity_score`
+4. `novelty_score`
+5. `emotional_intensity`
+6. `controversy_level`
+7. `shareability_score`
+8. `conversation_potential`
+9. `authenticity_score`
+10. `urgency_level`
+11. `call_to_action_strength`
+12. `trend_alignment`
+
+Boolean targets:
+
+1. `is_rage_bait`
+2. `is_clickbait`
+3. `is_ai_slop`
+4. `needs_context`
+5. `has_clear_takeaway`
+
+Categorical targets:
+
+1. `primary_emotion`
+2. `target_audience`
+3. `content_type`
+
+### Runtime outputs
+
+The browser/Node ONNX artifact exposes the 5-way bucket head plus the 12 numeric and 5 boolean auxiliary heads. The categorical targets were useful during training, but the minimal extension UI does not need to render them.
+
 The stable browser/runtime artifact filename is `v5-full.onnx`, but this file represents the final/latest validated v7-lineage model export.
 
 ```text
