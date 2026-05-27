@@ -1,0 +1,39 @@
+{
+  "name": "scoreboar-twitter-x-virality",
+  "version": "0.1.0",
+  "description": "Original local-first Chrome MV3 extension for scoring X/Twitter posts on-device with the Scoreboar ONNX model.",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "download:model": "node scripts/download-hf-assets.mjs --require-hf-config",
+    "build": "node scripts/build-extension.mjs",
+    "build:hf": "node scripts/download-hf-assets.mjs --require-hf-config && node scripts/build-extension.mjs",
+    "assert:dist": "node scripts/assert-dist.mjs",
+    "assert:manifest": "node scripts/assert-manifest.mjs",
+    "assert:no-remote-assets": "node scripts/assert-no-remote-assets.mjs",
+    "test": "vitest run"
+  },
+  "keywords": [
+    "chrome-extension",
+    "mv3",
+    "onnx",
+    "local-first",
+    "twitter",
+    "x",
+    "x.com",
+    "tweet-scoring",
+    "twitter-scoring",
+    "virality-score",
+    "social-media-scoring"
+  ],
+  "dependencies": {
+    "onnxruntime-web": "^1.26.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "jsdom": "^29.1.1",
+    "typescript": "^5.4.0",
+    "vitest": "^4.1.7"
+  }
+}
