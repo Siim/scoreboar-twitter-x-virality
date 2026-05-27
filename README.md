@@ -8,6 +8,7 @@ Scoreboar is the original local-first Chrome MV3 extension that adds compact sco
 
 - Adds one compact badge per detected `article[data-testid="tweet"]` on `https://x.com/*` and `https://twitter.com/*`.
 - Adds debounced composer hints for X post textareas/contenteditable composer boxes.
+- Composer scoring passively includes attached-media state plus current-account handle/follower/following/post/verified metadata when X has already exposed it in the page DOM or loaded state.
 - Passively reads author metadata only when X has already loaded it into same-page GraphQL responses.
 - Runs local ONNX inference in a Chrome offscreen document.
 - Keeps model, tokenizer, ONNX Runtime Web, and WASM assets packaged locally under `dist/`.

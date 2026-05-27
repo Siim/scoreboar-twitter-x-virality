@@ -419,7 +419,7 @@ export const createComposerHintController = (options: ComposerHintControllerOpti
     const panel = findOrCreatePanel(event.element, document)
     positionPanel(panel, event.element)
     bindPanelControls(panel, event.element, event.key, dismissedComposerKeys)
-    const hintResult = analyzeComposerHints(event.text)
+    const hintResult = analyzeComposerHints(event.text, { hasMedia: event.hasMedia })
     pendingComposerTasks.get(event.element)?.()
     pendingComposerTasks.delete(event.element)
 
@@ -443,6 +443,13 @@ export const createComposerHintController = (options: ComposerHintControllerOpti
           metadata: {
             source: "composer",
             cacheKey: event.key,
+            hasMedia: event.hasMedia,
+            authorHandle: event.authorMetadata.authorHandle,
+            authorFollowers: event.authorMetadata.authorFollowers,
+            authorFollowing: event.authorMetadata.authorFollowing,
+            authorTweets: event.authorMetadata.authorTweets,
+            authorVerified: event.authorMetadata.authorVerified,
+            authorMetadataSource: event.authorMetadata.authorMetadataSource,
             createdAtHour: event.createdAtHour,
             createdAtDay: event.createdAtDay,
           },

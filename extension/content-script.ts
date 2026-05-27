@@ -1,6 +1,6 @@
 import { extractTweetAuthorMetadata, extractTweetCreatedAtMetadata, extractTweetText, tweetHasMedia } from "../src/contracts.js"
 import { createScoreboarDomDetector } from "../src/dom-detection.js"
-import type { TweetFoundEvent } from "../src/dom-detection.js"
+import type { ComposerFoundEvent, TweetFoundEvent } from "../src/dom-detection.js"
 import { createComposerHintController } from "../src/composer-hints.js"
 import { SCOREBOAR_COMPOSER_PANEL_ATTRIBUTE, SCOREBOAR_COMPOSER_STYLE_ATTRIBUTE } from "../src/composer-hints.js"
 import { createFeedBadgeController } from "../src/feed-badges.js"
@@ -191,6 +191,31 @@ const isXAuthorStats = (value: unknown): value is XAuthorStats => {
       }
     }
 
+    const enrichComposerEvent = (event: ComposerFoundEvent): ComposerFoundEvent => {
+      const authorHandle = event.authorMetadata.authorHandle
+      const cached = authorHandle ? authorStatsByHandle.get(authorHandle.toLowerCase()) : undefined
+      if (!cached) return event
+
+      debug("composer author stats cache hit", {
+        handle: authorHandle,
+        followers: cached.authorFollowers,
+        following: cached.authorFollowing,
+        tweets: cached.authorTweets,
+      })
+
+      return {
+        ...event,
+        authorMetadata: {
+          authorHandle: cached.authorHandle,
+          authorFollowers: cached.authorFollowers ?? event.authorMetadata.authorFollowers,
+          authorFollowing: cached.authorFollowing ?? event.authorMetadata.authorFollowing,
+          authorTweets: cached.authorTweets ?? event.authorMetadata.authorTweets,
+          authorVerified: cached.authorVerified ?? event.authorMetadata.authorVerified,
+          authorMetadataSource: "loaded-x-response",
+        },
+      }
+    }
+
     const renderTweetBadgeSafely = (event: TweetFoundEvent) => {
       void badgeController.renderTweetBadge(event).catch((error: unknown) => {
         handleScoreRequestError(error)
@@ -244,7 +269,7 @@ const isXAuthorStats = (value: unknown): value is XAuthorStats => {
       },
       onComposerFound: (event) => {
         if (enabled) {
-          composerHintController.renderComposerHints(event)
+          composerHintController.renderComposerHints(enrichComposerEvent(event))
         }
       },
     })

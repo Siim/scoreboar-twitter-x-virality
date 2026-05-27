@@ -5,6 +5,8 @@ import {
   X_COMPOSER_SELECTOR,
   X_SELECTORS,
   X_TWEET_MEDIA_SELECTOR,
+  composerHasMedia,
+  extractCurrentAccountMetadata,
   extractComposerText,
   extractTextFeatures,
   extractTweetAuthorMetadata,
@@ -46,6 +48,19 @@ describe("selectors contract", () => {
     expect(extractComposerText(emptyRoot)).toBe("")
     expect(tweetHasMedia(emptyRoot)).toBe(false)
     expect(tweetHasMedia(mediaRoot)).toBe(true)
+  })
+
+  it("detects composer media previews without reading uploaded files", () => {
+    const dom = new JSDOM(`
+      <div role="dialog">
+        <div data-testid="tweetTextarea_0" role="textbox" contenteditable="true">draft with image</div>
+        <div data-testid="attachments"><img src="blob:https://x.com/local-preview" alt="Preview"></div>
+      </div>
+    `)
+    const dialog = dom.window.document.querySelector<HTMLElement>('[role="dialog"]')
+    expect(dialog).not.toBeNull()
+
+    expect(composerHasMedia(dialog!)).toBe(true)
   })
 
   it("extracts same-page author metadata without probing", () => {
@@ -98,6 +113,29 @@ describe("selectors contract", () => {
 
     expect(extractTweetAuthorMetadata(article!)).toEqual({
       authorHandle: "serialboar",
+      authorFollowers: 1286,
+      authorFollowing: 1192,
+      authorTweets: 3127,
+      authorVerified: true,
+      authorMetadataSource: "same-page-dom",
+    })
+  })
+
+  it("extracts current account metadata from account chrome and same-page state", () => {
+    const dom = new JSDOM(`
+      <nav>
+        <button data-testid="SideNav_AccountSwitcher_Button" aria-label="Account menu">
+          <div data-testid="UserAvatar-Container-siimh"></div>
+        </button>
+        <a data-testid="AppTabBar_Profile_Link" href="/siimh" aria-label="Profile"></a>
+      </nav>
+      <script>
+        window.__INITIAL_STATE__={"users":{"entities":{"791392986":{"followers_count":1286,"friends_count":1192,"statuses_count":3127,"screen_name":"siimh","is_blue_verified":true,"verified":false}}}};
+      </script>
+    `)
+
+    expect(extractCurrentAccountMetadata(dom.window.document)).toEqual({
+      authorHandle: "siimh",
       authorFollowers: 1286,
       authorFollowing: 1192,
       authorTweets: 3127,

@@ -100,7 +100,18 @@ describe("composer hint UI", () => {
   })
 
   it("renders composer score in the same percent insight format as feed badges", async () => {
-    const dom = new JSDOM(fixture("composer.html"))
+    const dom = new JSDOM(`
+      <main>
+        <button data-testid="SideNav_AccountSwitcher_Button" aria-label="Account menu">
+          <div data-testid="UserAvatar-Container-siimh"></div>
+        </button>
+        <div data-testid="tweetTextarea_0" role="textbox" contenteditable="true"></div>
+        <div data-testid="attachments"><img src="blob:https://x.com/local-preview" alt="Preview"></div>
+        <script>
+          window.__INITIAL_STATE__={"users":{"entities":{"791392986":{"followers_count":1286,"friends_count":1192,"statuses_count":3127,"screen_name":"siimh","is_blue_verified":true,"verified":false}}}};
+        </script>
+      </main>
+    `)
     const seenMetadata: Record<string, unknown>[] = []
     const controller = createComposerHintController({
       document: dom.window.document,
@@ -132,6 +143,13 @@ describe("composer hint UI", () => {
     const panel = dom.window.document.querySelector<HTMLElement>(panelSelector)
     expect(panel?.getAttribute(SCOREBOAR_COMPOSER_PANEL_STATE_ATTRIBUTE)).toBe("ready")
     expect(panel?.querySelector(".scoreboar-composer-panel__value")?.textContent).toBe("🎯  75% · hook")
+    expect(seenMetadata[0]?.hasMedia).toBe(true)
+    expect(seenMetadata[0]?.authorHandle).toBe("siimh")
+    expect(seenMetadata[0]?.authorFollowers).toBe(1286)
+    expect(seenMetadata[0]?.authorFollowing).toBe(1192)
+    expect(seenMetadata[0]?.authorTweets).toBe(3127)
+    expect(seenMetadata[0]?.authorVerified).toBe(true)
+    expect(seenMetadata[0]?.authorMetadataSource).toBe("same-page-dom")
     expect(typeof seenMetadata[0]?.createdAtHour).toBe("number")
     expect(typeof seenMetadata[0]?.createdAtDay).toBe("number")
     expect(panel?.querySelector("img.scoreboar-boar")).toBeNull()

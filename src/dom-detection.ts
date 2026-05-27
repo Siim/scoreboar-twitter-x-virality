@@ -1,7 +1,9 @@
 import {
   X_COMPOSER_SELECTOR,
   X_SELECTORS,
+  composerHasMedia,
   currentTimeMetadata,
+  extractCurrentAccountMetadata,
   extractComposerText,
   extractTweetAuthorMetadata,
   extractTweetCreatedAtMetadata,
@@ -31,6 +33,8 @@ export interface ComposerFoundEvent {
   readonly text: string
   readonly key: string
   readonly changed: boolean
+  readonly hasMedia: boolean
+  readonly authorMetadata: TweetAuthorMetadata
   readonly createdAtHour: number | null
   readonly createdAtDay: number | null
 }
@@ -89,6 +93,22 @@ const defaultMutationObserverCtor = (): typeof MutationObserver | undefined => {
   return typeof MutationObserver === "undefined" ? undefined : MutationObserver
 }
 
+const composerContextRoot = (composerElement: Element): Element | ParentNode => {
+  return composerElement.closest('[role="dialog"], form') ?? composerElement.parentElement ?? composerElement
+}
+
+const composerKey = (text: string, hasMedia: boolean, authorMetadata: TweetAuthorMetadata): string => {
+  return [
+    text,
+    hasMedia ? "media" : "no-media",
+    authorMetadata.authorHandle ?? "",
+    authorMetadata.authorFollowers ?? "",
+    authorMetadata.authorFollowing ?? "",
+    authorMetadata.authorTweets ?? "",
+    authorMetadata.authorVerified ?? "",
+  ].join("\u0000")
+}
+
 export const createScoreboarDomDetector = (options: ScoreboarDomDetectorOptions = {}): ScoreboarDomDetector => {
   const root = options.root ?? getDocumentRoot()
   const throttleMs = options.throttleMs ?? DEFAULT_THROTTLE_MS
@@ -126,8 +146,11 @@ export const createScoreboarDomDetector = (options: ScoreboarDomDetectorOptions 
 
   const scanComposers = () => {
     for (const composerElement of candidateElements(root, X_COMPOSER_SELECTOR)) {
-      const text = normalizeDetectedText(extractComposerText(composerElement.parentElement ?? root))
-      const key = text
+      const contextRoot = composerContextRoot(composerElement)
+      const text = normalizeDetectedText(extractComposerText(contextRoot))
+      const hasMedia = composerHasMedia(contextRoot)
+      const authorMetadata = extractCurrentAccountMetadata((composerElement.ownerDocument ?? root) as ParentNode & Pick<ParentNode, "querySelectorAll">)
+      const key = composerKey(text, hasMedia, authorMetadata)
       const previousKey = composerKeys.get(composerElement)
 
       if (previousKey === key) {
@@ -141,6 +164,8 @@ export const createScoreboarDomDetector = (options: ScoreboarDomDetectorOptions 
         text,
         key,
         changed: previousKey !== undefined,
+        hasMedia,
+        authorMetadata,
         ...currentTimeMetadata(),
       })
     }

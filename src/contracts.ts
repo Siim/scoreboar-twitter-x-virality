@@ -3,10 +3,13 @@ export const X_SELECTORS = Object.freeze({
   tweetText: '[data-testid="tweetText"]',
   composerPrimary: '[data-testid="tweetTextarea_0"]',
   composerFallback: 'div[role="textbox"][contenteditable="true"]',
+  currentAccountSwitcher: '[data-testid="SideNav_AccountSwitcher_Button"]',
+  currentProfileLink: '[data-testid="AppTabBar_Profile_Link"]',
   mediaPhoto: '[data-testid="tweetPhoto"]',
   mediaVideo: '[data-testid="videoPlayer"]',
   mediaCard: '[data-testid="card.wrapper"]',
   mediaPreview: '[data-testid="previewInterstitial"]',
+  composerMediaPreview: '[data-testid="attachments"], [data-testid="mediaPreview"], [data-testid="tweetPhoto"], [data-testid="videoPlayer"], img[src^="blob:"], video',
 } as const)
 
 export const X_COMPOSER_SELECTOR = [
@@ -20,6 +23,8 @@ export const X_TWEET_MEDIA_SELECTOR = [
   X_SELECTORS.mediaCard,
   X_SELECTORS.mediaPreview,
 ].join(", ")
+
+export const X_COMPOSER_MEDIA_SELECTOR = X_SELECTORS.composerMediaPreview
 
 export const V5_METADATA_FEATURE_ORDER = [
   "has_media",
@@ -142,6 +147,10 @@ export const tweetHasMedia = (tweetRoot: QueryRoot): boolean => {
   return tweetRoot.querySelector(X_TWEET_MEDIA_SELECTOR) !== null
 }
 
+export const composerHasMedia = (composerRoot: QueryRoot): boolean => {
+  return composerRoot.querySelector(X_COMPOSER_MEDIA_SELECTOR) !== null
+}
+
 export const timeMetadataFromDate = (date: Date): Omit<TweetCreatedAtMetadata, "createdAtSource"> => {
   if (!Number.isFinite(date.getTime())) {
     return { createdAtHour: null, createdAtDay: null }
@@ -256,6 +265,46 @@ export const extractTweetAuthorMetadata = (tweetRoot: QueryAllRoot): TweetAuthor
   const authorFollowing = extractCountNearLabel(localText, "following") ?? serialized?.authorFollowing ?? null
   const authorTweets = extractCountNearLabel(localText, "posts") ?? extractCountNearLabel(localText, "tweets") ?? serialized?.authorTweets ?? null
   const authorVerified = /verified account|blue verified|premium account/iu.test(localText) || tweetRoot.querySelector('[aria-label*="Verified" i], [data-testid*="verified" i]') !== null ? true : serialized?.authorVerified ?? null
+  const hasStats = authorFollowers !== null || authorFollowing !== null || authorTweets !== null || authorVerified !== null
+  const hasLocalAuthorData = hasStats || authorHandle !== null
+
+  return {
+    authorHandle,
+    authorFollowers,
+    authorFollowing,
+    authorTweets,
+    authorVerified,
+    authorMetadataSource: hasLocalAuthorData ? "same-page-dom" : "defaulted",
+  }
+}
+
+const extractCurrentAccountHandle = (root: QueryAllRoot): string | null => {
+  const accountSwitcher = root.querySelector(X_SELECTORS.currentAccountSwitcher)
+  const avatarHandle = accountSwitcher?.querySelector('[data-testid^="UserAvatar-Container-"]')?.getAttribute("data-testid")?.match(/^UserAvatar-Container-([A-Za-z0-9_]{1,20})$/u)?.[1]
+  if (avatarHandle) return avatarHandle
+
+  const accountText = accountSwitcher?.textContent ?? ""
+  const accountHandle = accountText.match(/@([A-Za-z0-9_]{1,20})\b/u)?.[1]
+  if (accountHandle) return accountHandle
+
+  const profileHref = root.querySelector(X_SELECTORS.currentProfileLink)?.getAttribute("href") ?? ""
+  const profileHandle = profileHref.match(/^\/([A-Za-z0-9_]{1,20})(?:$|[/?#])/u)?.[1]
+  if (profileHandle) return profileHandle
+
+  return null
+}
+
+export const extractCurrentAccountMetadata = (root: QueryAllRoot): TweetAuthorMetadata => {
+  const accountSwitcher = root.querySelector(X_SELECTORS.currentAccountSwitcher)
+  const localText = accountSwitcher?.textContent ?? ""
+  const authorHandle = extractCurrentAccountHandle(root)
+  const rootDocument = (root as OwnerDocumentRoot).ownerDocument ?? ((root as { readonly nodeType?: number }).nodeType === 9 ? root as Document : null)
+  const serialized = extractSerializedAuthorMetadata(rootDocument, authorHandle)
+  const authorFollowers = extractCountNearLabel(localText, "followers") ?? serialized?.authorFollowers ?? null
+  const authorFollowing = extractCountNearLabel(localText, "following") ?? serialized?.authorFollowing ?? null
+  const authorTweets = extractCountNearLabel(localText, "posts") ?? extractCountNearLabel(localText, "tweets") ?? serialized?.authorTweets ?? null
+  const localVerified = /verified account|blue verified|premium account/iu.test(localText) || accountSwitcher?.querySelector('[aria-label*="Verified" i], [data-testid*="verified" i]') !== null
+  const authorVerified = localVerified ? true : serialized?.authorVerified ?? null
   const hasStats = authorFollowers !== null || authorFollowing !== null || authorTweets !== null || authorVerified !== null
   const hasLocalAuthorData = hasStats || authorHandle !== null
 
