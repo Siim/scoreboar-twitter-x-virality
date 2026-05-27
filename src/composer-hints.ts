@@ -43,11 +43,13 @@ const COMPOSER_PANEL_CSS = `
   box-shadow: 0 0.375rem 1.25rem rgb(15 20 25 / 0.16) !important;
   color: var(--scoreboar-composer-ink);
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   font: 500 0.8125rem/1.25 TwitterChirp, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   gap: 0.35rem;
   margin: 0 !important;
   max-inline-size: min(100%, 30rem);
+  min-inline-size: 0;
+  overflow: hidden;
   padding: 0.25rem 0.35rem 0.25rem 0.45rem !important;
   position: absolute;
   z-index: 2147483647;
@@ -74,6 +76,7 @@ const COMPOSER_PANEL_CSS = `
 .scoreboar-composer-panel__score {
   align-items: center;
   display: inline-flex;
+  flex: 0 0 auto;
   gap: 0.3rem;
   min-block-size: 2rem;
 }
@@ -94,9 +97,12 @@ const COMPOSER_PANEL_CSS = `
 }
 .scoreboar-composer-panel__hints {
   display: inline-flex;
+  flex: 1 1 auto;
   gap: 0.25rem;
   list-style: none;
   margin: 0;
+  min-inline-size: 0;
+  overflow: hidden;
   padding: 0;
 }
 .scoreboar-composer-panel__value {
@@ -107,8 +113,10 @@ const COMPOSER_PANEL_CSS = `
   align-items: center;
   color: var(--scoreboar-composer-ink-strong);
   display: inline-flex;
+  flex: 1 1 auto;
   gap: 0.25rem;
   max-inline-size: min(26rem, 52vw);
+  min-inline-size: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -121,6 +129,7 @@ const COMPOSER_PANEL_CSS = `
 .scoreboar-composer-panel__actions {
   align-items: center;
   display: inline-flex;
+  flex: 0 0 auto;
   gap: 0.125rem;
 }
 .scoreboar-composer-panel__action {

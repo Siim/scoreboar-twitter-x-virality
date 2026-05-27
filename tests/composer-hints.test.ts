@@ -218,6 +218,23 @@ describe("composer hint UI", () => {
     expect(panel?.style.getPropertyValue("--scoreboar-composer-top")).toBe("56px")
   })
 
+  it("keeps composer hints to one row so long copy truncates instead of covering typed text", () => {
+    const dom = new JSDOM(fixture("composer.html"))
+    const controller = createComposerHintController({ document: dom.window.document })
+    const detector = createScoreboarDomDetector({
+      root: dom.window.document,
+      onComposerFound: (event) => controller.renderComposerHints(event),
+    })
+
+    detector.scan()
+
+    const style = dom.window.document.querySelector<HTMLStyleElement>("style[data-scoreboar-composer-style='true']")
+    expect(style?.textContent).toContain("flex-wrap: nowrap")
+    expect(style?.textContent).toContain(".scoreboar-composer-panel__hints")
+    expect(style?.textContent).toContain("min-inline-size: 0")
+    expect(style?.textContent).toContain("text-overflow: ellipsis")
+  })
+
   it("lets users drag the modal composer hint panel away from content", async () => {
     const dom = new JSDOM(`
       <div role="dialog" aria-label="Post composer">
