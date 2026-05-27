@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Scoreboar Local Composer Fixture</title>
+  </head>
+  <body>
+    <main aria-label="Local composer fixture">
+      <section aria-label="Composer">
+        <div
+          data-testid="tweetTextarea_0"
+          role="textbox"
+          aria-label="Post text"
+          contenteditable="true"
+          spellcheck="true"
+        ></div>
+        <button type="button" disabled aria-label="Local fixture only">Post disabled in fixture</button>
+      </section>
+      <script>
+        const editor = document.querySelector('[data-testid="tweetTextarea_0"]')
+        editor?.addEventListener('input', () => {
+          editor.dataset.lastInputLength = String(editor.textContent.length)
+        })
+      </script>
+    </main>
+  </body>
+</html>
