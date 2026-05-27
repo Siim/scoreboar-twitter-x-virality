@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Scoreboar</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      body {
+        background: #050505;
+        color: #f7f7f7;
+        margin: 0;
+        min-inline-size: 220px;
+      }
+      main {
+        display: grid;
+        gap: 14px;
+        padding: 16px;
+      }
+      .brand {
+        align-items: center;
+        display: flex;
+        gap: 10px;
+      }
+      .mark {
+        align-items: center;
+        background: #111;
+        border: 1px solid #2a2a2a;
+        border-radius: 10px;
+        display: inline-flex;
+        font-size: 22px;
+        font-weight: 900;
+        block-size: 36px;
+        inline-size: 36px;
+        justify-content: center;
+        letter-spacing: -0.04em;
+      }
+      h1 {
+        font-size: 15px;
+        line-height: 1.2;
+        margin: 0;
+      }
+      p {
+        color: #a1a1aa;
+        font-size: 12px;
+        line-height: 1.35;
+        margin: 2px 0 0;
+      }
+      .row {
+        align-items: center;
+        background: #111;
+        border: 1px solid #27272a;
+        border-radius: 14px;
+        display: flex;
+        justify-content: space-between;
+        padding: 12px;
+      }
+      .label {
+        display: grid;
+        gap: 2px;
+      }
+      .label strong {
+        font-size: 13px;
+      }
+      .label span {
+        color: #a1a1aa;
+        font-size: 11px;
+      }
+      button {
+        background: #3f3f46;
+        border: 0;
+        border-radius: 999px;
+        cursor: pointer;
+        inline-size: 48px;
+        padding: 3px;
+        transition: background 120ms ease;
+      }
+      button::before {
+        background: #fff;
+        border-radius: 999px;
+        content: "";
+        display: block;
+        block-size: 20px;
+        inline-size: 20px;
+        transform: translateX(0);
+        transition: transform 120ms ease;
+      }
+      button[aria-pressed="true"] {
+        background: #16a34a;
+      }
+      button[aria-pressed="true"]::before {
+        transform: translateX(22px);
+      }
+      .status {
+        color: #d4d4d8;
+        font-size: 11px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="brand" aria-label="Scoreboar">
+        <span class="mark" aria-hidden="true">S</span>
+        <div>
+          <h1>Scoreboar</h1>
+          <p>Local X score estimates.</p>
+        </div>
+      </section>
+      <section class="row">
+        <span class="label">
+          <strong>Extension</strong>
+          <span id="state-label">Loading…</span>
+        </span>
+        <button id="toggle" type="button" aria-label="Toggle Scoreboar" aria-pressed="true"></button>
+      </section>
+      <div class="status" id="status">Text stays on-device.</div>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>
