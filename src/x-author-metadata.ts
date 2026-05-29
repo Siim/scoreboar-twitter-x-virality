@@ -7,6 +7,12 @@ export interface XAuthorStats {
   readonly authorMetadataSource: "loaded-x-response"
 }
 
+export interface XTweetText {
+  readonly tweetId: string
+  readonly text: string
+  readonly textSource: "loaded-x-response"
+}
+
 const isRecord = (value: unknown): value is Record<string, unknown> => {
   return typeof value === "object" && value !== null
 }
@@ -21,6 +27,14 @@ const booleanOrNull = (value: unknown): boolean | null => {
 
 const stringOrNull = (value: unknown): string | null => {
   return typeof value === "string" && /^[A-Za-z0-9_]{1,20}$/u.test(value) ? value : null
+}
+
+const tweetIdOrNull = (value: unknown): string | null => {
+  return typeof value === "string" && /^\d+$/u.test(value) ? value : null
+}
+
+const tweetTextOrNull = (value: unknown): string | null => {
+  return typeof value === "string" && value.trim().length > 0 ? value.replace(/\s+/g, " ").trim() : null
 }
 
 const statsFromUserResult = (value: Record<string, unknown>): XAuthorStats | null => {
@@ -71,4 +85,47 @@ export const extractXAuthorStatsFromGraphql = (payload: unknown): readonly XAuth
 
   visit(payload)
   return [...statsByHandle.values()]
+}
+
+const tweetTextFromResult = (value: Record<string, unknown>): XTweetText | null => {
+  const legacy = isRecord(value.legacy) ? value.legacy : null
+  const tweetId = tweetIdOrNull(value.rest_id) ?? tweetIdOrNull(legacy?.id_str)
+  if (!tweetId || !legacy) return null
+
+  const noteTweet = isRecord(value.note_tweet) ? value.note_tweet : null
+  const noteTweetResults = isRecord(noteTweet?.note_tweet_results) ? noteTweet.note_tweet_results : null
+  const noteTweetResult = isRecord(noteTweetResults?.result) ? noteTweetResults.result : null
+  const noteTweetText = tweetTextOrNull(noteTweetResult?.text)
+  const legacyFullText = tweetTextOrNull(legacy.full_text)
+  const legacyText = tweetTextOrNull(legacy.text)
+  const text = noteTweetText ?? legacyFullText ?? legacyText
+  if (!text) return null
+
+  return { tweetId, text, textSource: "loaded-x-response" }
+}
+
+export const extractXTweetTextsFromGraphql = (payload: unknown): readonly XTweetText[] => {
+  const textByTweetId = new Map<string, XTweetText>()
+  const visit = (value: unknown) => {
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item)
+      return
+    }
+    if (!isRecord(value)) return
+
+    const tweetText = tweetTextFromResult(value)
+    if (tweetText) {
+      const existing = textByTweetId.get(tweetText.tweetId)
+      if (!existing || tweetText.text.length > existing.text.length) {
+        textByTweetId.set(tweetText.tweetId, tweetText)
+      }
+    }
+
+    for (const child of Object.values(value)) {
+      if (typeof child === "object" && child !== null) visit(child)
+    }
+  }
+
+  visit(payload)
+  return [...textByTweetId.values()]
 }

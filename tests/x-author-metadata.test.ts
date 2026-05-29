@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { extractXAuthorStatsFromGraphql } from "../src/x-author-metadata"
+import { extractXAuthorStatsFromGraphql, extractXTweetTextsFromGraphql } from "../src/x-author-metadata"
 
 describe("x author metadata extraction", () => {
   it("extracts author stats from loaded HomeTimeline-style user results", () => {
@@ -65,5 +65,65 @@ describe("x author metadata extraction", () => {
       authorVerified: false,
       authorMetadataSource: "loaded-x-response",
     }])
+  })
+})
+
+describe("X tweet text extraction", () => {
+  it("extracts the longest loaded tweet text from GraphQL results", () => {
+    const payload = {
+      data: {
+        tweet_results: {
+          result: {
+            rest_id: "2060333451543290334",
+            legacy: {
+              id_str: "2060333451543290334",
+              full_text: "truncated visible text",
+            },
+            note_tweet: {
+              note_tweet_results: {
+                result: {
+                  text: "truncated visible text with the full ending own life easier?",
+                },
+              },
+            },
+          },
+        },
+      },
+    }
+
+    expect(extractXTweetTextsFromGraphql(payload)).toEqual([
+      {
+        tweetId: "2060333451543290334",
+        text: "truncated visible text with the full ending own life easier?",
+        textSource: "loaded-x-response",
+      },
+    ])
+  })
+
+  it("extracts text from wrapped TweetWithVisibilityResults-style nodes", () => {
+    const payload = {
+      data: {
+        tweetResult: {
+          result: {
+            __typename: "TweetWithVisibilityResults",
+            tweet: {
+              rest_id: "12345",
+              legacy: {
+                id_str: "12345",
+                full_text: "wrapped standard tweet full text",
+              },
+            },
+          },
+        },
+      },
+    }
+
+    expect(extractXTweetTextsFromGraphql(payload)).toEqual([
+      {
+        tweetId: "12345",
+        text: "wrapped standard tweet full text",
+        textSource: "loaded-x-response",
+      },
+    ])
   })
 })
