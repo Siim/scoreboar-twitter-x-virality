@@ -482,14 +482,14 @@ const winningClassText = (classOdds: readonly ProbabilityEntry[]): string => {
   const [winner, runnerUp] = classOdds
   if (!winner) return "unavailable"
   const topIsStrong = winner.value >= 0.7 || !runnerUp || winner.value - runnerUp.value >= 0.35
-  if (topIsStrong) return winner.label
+  if (topIsStrong) return `${winner.name} bucket · ${Math.round(winner.value * 100)}% odds`
 
   if (winner.rank !== null && runnerUp.rank !== null && Math.abs(winner.rank - runnerUp.rank) === 1) {
     const [lower, higher] = [winner, runnerUp].sort((left, right) => (left.rank ?? 0) - (right.rank ?? 0))
-    return `${lower.name}–${higher.name} · ${Math.round((winner.value + runnerUp.value) * 100)}% range`
+    return `${lower.name}–${higher.name} buckets · ${Math.round((winner.value + runnerUp.value) * 100)}% odds`
   }
 
-  return `mixed · ${winner.name}/${runnerUp.name} · ${Math.round((winner.value + runnerUp.value) * 100)}% range`
+  return `mixed buckets · ${winner.name}/${runnerUp.name} · ${Math.round((winner.value + runnerUp.value) * 100)}% odds`
 }
 
 const reliabilityChips = (summary: ScoreLabelSummary): readonly string[] => {
@@ -638,7 +638,7 @@ const setBadgeDetails = (
   if (summary.status === "scored") {
     appendRow("Style", summary.stability.tier === "uncertain" ? "rough read" : summary.insight ? formatCompactScoreInsight(summary.insight) : "balanced")
   }
-  appendRow("Likely range", winningClassText(classOdds))
+  appendRow("Bucket odds", winningClassText(classOdds))
   appendRow("Red flags", warningChips)
   appendRow("Signals", signalChips)
   details.append(title, kicker, list)

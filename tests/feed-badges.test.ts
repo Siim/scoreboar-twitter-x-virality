@@ -199,7 +199,7 @@ describe("feed badge UI", () => {
     expect(details?.textContent).toContain("Style: clickbait")
     expect(details?.textContent).not.toContain("certainty high")
     expect(details?.textContent).not.toContain("features 4")
-    expect(details?.textContent).toContain("Likely range: high 82%")
+    expect(details?.textContent).toContain("Bucket odds: high bucket · 82% odds")
     expect(details?.textContent).not.toContain("Other buckets:")
     expect(details?.textContent).toContain("Red flags: 🚩 top: 🎣 clickbait🤖 slop 74%🎣 bait 91%🧩 needs context 63%")
     expect(details?.querySelectorAll('[data-scoreboar-chip-tone="danger"]')).toHaveLength(3)
@@ -251,7 +251,7 @@ describe("feed badge UI", () => {
     expect(details?.textContent).not.toContain("mixed model odds")
     expect(details?.textContent).not.toContain("certainty low")
     expect(details?.textContent).not.toContain("features 12")
-    expect(details?.textContent).toContain("Likely range: medium–high · 51% range")
+    expect(details?.textContent).toContain("Bucket odds: medium–high buckets · 51% odds")
     expect(details?.textContent).toContain("Red flags: no strong flags")
     expect(details?.textContent).not.toContain("Other buckets:")
   })
@@ -300,7 +300,54 @@ describe("feed badge UI", () => {
     expect(badge ? badgeValueText(badge) : null).toBe("🤔  58%")
     expect(details?.textContent).toContain("🤔  58%")
     expect(details?.textContent).toContain("Style: rough read")
-    expect(details?.textContent).toContain("Likely range: medium–high · 74% range")
+    expect(details?.textContent).toContain("Bucket odds: medium–high buckets · 74% odds")
+  })
+
+  it("keeps badge score and details title aligned when bucket odds differ", async () => {
+    const dom = new JSDOM(`
+      <article data-testid="tweet">
+        <div data-testid="tweetText">Score and odds can be different without being contradictory</div>
+        <button aria-label="Grok actions">Grok</button>
+      </article>
+    `)
+    const badgeController = createFeedBadgeController({
+      document: dom.window.document,
+      scorer: {
+        scoreTweet: async (text) => ({
+          ...scoredResult(text, 0.69),
+          probabilities: { high: 0.69, medium: 0.12, very_high: 0.09, low: 0.07, very_low: 0.03 },
+          numericScores: { virality_score: 0.65, hook_quality: 0.7 },
+          booleanScores: {},
+          metadataVector: Array.from({ length: 12 }, (_, index) => index),
+        }),
+      },
+    })
+    const tweet = dom.window.document.querySelector<HTMLElement>(X_SELECTORS.tweetRoot)
+    expect(tweet).not.toBeNull()
+
+    await badgeController.renderTweetBadge({
+      root: tweet!,
+      text: "Score and odds can be different without being contradictory",
+      key: "score-odds-fixture",
+      previousKey: null,
+      changed: false,
+      hasMedia: false,
+      authorMetadata: {
+        authorHandle: null,
+        authorFollowers: null,
+        authorFollowing: null,
+        authorTweets: null,
+        authorVerified: null,
+        authorMetadataSource: "defaulted",
+      },
+    })
+
+    const badge = dom.window.document.querySelector<HTMLElement>(badgeSelector)
+    const details = badge ? detailsForBadge(badge) : null
+    expect(badge ? badgeValueText(badge) : null).toBe("😎  65%")
+    expect(details?.querySelector(".scoreboar-feed-badge__details-title")?.textContent).toBe("😎  65%")
+    expect(details?.textContent).toContain("Bucket odds: high bucket · 69% odds")
+    expect(details?.textContent).not.toContain("Likely range: high 69%")
   })
 
   it("places the badge before a native Grok/top-tools target when present", async () => {
@@ -426,7 +473,7 @@ describe("feed badge UI", () => {
     const details = badge ? detailsForBadge(badge) : null
     expect(details?.parentElement).toBe(dom.window.document.body)
     expect(details?.getAttribute("data-scoreboar-feed-details-open")).toBe("true")
-    expect(details?.textContent).toContain("Likely range:")
+    expect(details?.textContent).toContain("Bucket odds:")
     expect(details?.textContent).not.toContain("Author stats:")
     expect(details?.getAttribute("style")).toContain("--scoreboar-popover-top")
     expect(details?.getAttribute("style")).toContain("--scoreboar-popover-arrow-left")
