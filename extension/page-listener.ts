@@ -1,7 +1,12 @@
-import { extractXAuthorStatsFromGraphql } from "../src/x-author-metadata.js"
+import { extractXAuthorStatsFromGraphql, extractXTweetTextsFromGraphql } from "../src/x-author-metadata.js"
 
 type ScoreboarPageMessage = {
   readonly type: "scoreboar.authorMetadataBatch"
+  readonly payload: unknown
+}
+
+type ScoreboarTweetTextMessage = {
+  readonly type: "scoreboar.tweetTextBatch"
   readonly payload: unknown
 }
 
@@ -14,6 +19,7 @@ type ScoreboarRequestMessage = {
   if (globalScope.__scoreboarAuthorListenerInstalled) return
   globalScope.__scoreboarAuthorListenerInstalled = true
   const statsByHandle = new Map<string, unknown>()
+  const textsByTweetId = new Map<string, unknown>()
 
   const debug = (message: string, details?: unknown) => {
     globalScope.console.info(`[Scoreboar author-listener] ${message}`, details ?? "")
@@ -41,20 +47,50 @@ type ScoreboarRequestMessage = {
     globalScope.postMessage(message, "*")
   }
 
+  const postTweetTexts = (payload: unknown) => {
+    const texts = extractXTweetTextsFromGraphql(payload)
+    if (texts.length === 0) return
+    for (const tweetText of texts) {
+      const existing = textsByTweetId.get(tweetText.tweetId) as { readonly text?: unknown } | undefined
+      if (typeof existing?.text !== "string" || tweetText.text.length > existing.text.length) {
+        textsByTweetId.set(tweetText.tweetId, tweetText)
+      }
+    }
+    debug("captured loaded X tweet text", {
+      batch: texts.length,
+      cached: textsByTweetId.size,
+      tweetIds: texts.slice(0, 12).map((tweetText) => tweetText.tweetId),
+    })
+    const message: ScoreboarTweetTextMessage = {
+      type: "scoreboar.tweetTextBatch",
+      payload: [...textsByTweetId.values()],
+    }
+    globalScope.postMessage(message, "*")
+  }
+
   globalScope.addEventListener("message", (event: MessageEvent<ScoreboarRequestMessage>) => {
     if (event.data?.type !== "scoreboar.requestAuthorMetadataBatch") return
     debug("received cache replay request", { cached: statsByHandle.size })
-    if (statsByHandle.size === 0) return
-    const message: ScoreboarPageMessage = {
-      type: "scoreboar.authorMetadataBatch",
-      payload: [...statsByHandle.values()],
+    if (statsByHandle.size > 0) {
+      const message: ScoreboarPageMessage = {
+        type: "scoreboar.authorMetadataBatch",
+        payload: [...statsByHandle.values()],
+      }
+      globalScope.postMessage(message, "*")
     }
-    globalScope.postMessage(message, "*")
+    if (textsByTweetId.size > 0) {
+      const message: ScoreboarTweetTextMessage = {
+        type: "scoreboar.tweetTextBatch",
+        payload: [...textsByTweetId.values()],
+      }
+      globalScope.postMessage(message, "*")
+    }
   })
 
   const inspectPayload = (payload: unknown, source: "fetch" | "xhr", url: string) => {
     debug("inspecting X GraphQL response", { source, url: url.replace(/\?.*$/u, "") })
     postStats(payload)
+    postTweetTexts(payload)
   }
 
   const inspectResponse = (response: Response) => {

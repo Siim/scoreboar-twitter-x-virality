@@ -140,6 +140,43 @@ describe("feed badge UI", () => {
     expect(badges.every((badge) => badgeValueText(badge) === "—")).toBe(true)
   })
 
+  it("still scores timeline previews when X truncates the tweet text", async () => {
+    const dom = new JSDOM(`
+      <article data-testid="tweet">
+        <div data-testid="tweetText">i solved my pain by building a phone app that makes your</div>
+        <a href="/siimh/status/2060333451543290334">5h</a>
+        <span>Show more</span>
+      </article>
+    `)
+    let scoreCalls = 0
+    const badgeController = createFeedBadgeController({
+      document: dom.window.document,
+      scorer: {
+        scoreTweet: async (text) => {
+          scoreCalls += 1
+          return scoredResult(text, 1)
+        },
+      },
+    })
+    const rendered: Array<Promise<void>> = []
+    const detector = createScoreboarDomDetector({
+      root: dom.window.document,
+      onTweetFound: (event) => {
+        rendered.push(badgeController.renderTweetBadge(event))
+      },
+    })
+
+    detector.scan()
+    await Promise.all(rendered)
+
+    const badge = dom.window.document.querySelector<HTMLElement>(badgeSelector)
+    const details = badge ? detailsForBadge(badge) : null
+    expect(scoreCalls).toBe(1)
+    expect(badge?.getAttribute(SCOREBOAR_BADGE_STATE_ATTRIBUTE)).toBe("scored")
+    expect(badge ? badgeValueText(badge) : null).toBe("🎯  75%")
+    expect(details?.textContent).toContain("🎯  75%")
+  })
+
   it("shows red-flag warning chips and extra model stats for clickbait or slop", async () => {
     const dom = new JSDOM(`
       <article data-testid="tweet">

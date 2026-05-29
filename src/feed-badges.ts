@@ -431,7 +431,7 @@ const findOrCreateBadge = (tweetRoot: Element, document: Document): HTMLElement 
 
 const setBadge = (badge: HTMLElement, state: FeedBadgeState, label: string) => {
   badge.setAttribute(SCOREBOAR_BADGE_STATE_ATTRIBUTE, state)
-  const accessibleLabel = state === "unavailable" ? "Scoreboar score unavailable: local ONNX model is not packaged yet" : `Scoreboar ${label}`
+  const accessibleLabel = state === "unavailable" && label === "—" ? "Scoreboar score unavailable: local ONNX model is not packaged yet" : `Scoreboar ${label}`
   badge.setAttribute("aria-label", accessibleLabel)
   badge.setAttribute("title", accessibleLabel)
   const value = badge.querySelector<HTMLElement>(".scoreboar-feed-badge__value")
@@ -673,6 +673,7 @@ export const createFeedBadgeController = (options: FeedBadgeControllerOptions) =
       text: event.text,
       metadata: {
         cacheKey: event.key,
+        tweetId: event.tweetId,
         hasMedia: event.hasMedia,
         createdAtHour: event.createdAtMetadata?.createdAtHour ?? null,
         createdAtDay: event.createdAtMetadata?.createdAtDay ?? null,

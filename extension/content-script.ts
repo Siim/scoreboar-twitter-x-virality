@@ -1,4 +1,4 @@
-import { extractTweetAuthorMetadata, extractTweetCreatedAtMetadata, extractTweetText, tweetHasMedia } from "../src/contracts.js"
+import { extractTweetAuthorMetadata, extractTweetCreatedAtMetadata, extractTweetStatusId, extractTweetText, tweetHasMedia, tweetTextIsTruncated } from "../src/contracts.js"
 import { createScoreboarDomDetector } from "../src/dom-detection.js"
 import type { ComposerFoundEvent, TweetFoundEvent } from "../src/dom-detection.js"
 import { createComposerHintController } from "../src/composer-hints.js"
@@ -7,7 +7,7 @@ import { createFeedBadgeController } from "../src/feed-badges.js"
 import { SCOREBOAR_BADGE_ATTRIBUTE, SCOREBOAR_BADGE_STYLE_ATTRIBUTE } from "../src/feed-badges.js"
 import type { ScoreTextResponseMessage, ScoreTextResult } from "../src/inference-runtime.js"
 import { createScoringGuardrails, createTextScoringCacheKey } from "../src/scoring-guardrails.js"
-import type { XAuthorStats } from "../src/x-author-metadata.js"
+import type { XAuthorStats, XTweetText } from "../src/x-author-metadata.js"
 
 type ScoreboarContentChrome = {
   readonly runtime?: {
@@ -47,11 +47,17 @@ const isXAuthorStats = (value: unknown): value is XAuthorStats => {
   return typeof value === "object" && value !== null && typeof record?.authorHandle === "string"
 }
 
+const isXTweetText = (value: unknown): value is XTweetText => {
+  const record = value as Partial<XTweetText> | null
+  return typeof value === "object" && value !== null && typeof record?.tweetId === "string" && typeof record?.text === "string"
+}
+
 (() => {
   const scoreTextMessageType = "scoreboar.scoreText"
   const enabledStorageKey = "scoreboarEnabled"
   const chromeApi = (globalThis as { chrome?: ScoreboarContentChrome }).chrome
   const authorStatsByHandle = new Map<string, XAuthorStats>()
+  const tweetTextById = new Map<string, XTweetText>()
   let enabled = true
   let detector: ReturnType<typeof createScoreboarDomDetector> | null = null
   const contentScoreGuardrails = createScoringGuardrails<ScoreboarContentScoreRequest, unknown>({
@@ -166,27 +172,44 @@ const isXAuthorStats = (value: unknown): value is XAuthorStats => {
     const enrichTweetEvent = (event: TweetFoundEvent): TweetFoundEvent => {
       const authorHandle = event.authorMetadata.authorHandle
       const cached = authorHandle ? authorStatsByHandle.get(authorHandle.toLowerCase()) : undefined
-      if (!cached) {
+      const cachedText = event.tweetId ? tweetTextById.get(event.tweetId) : undefined
+      const hasLongerCachedText = typeof cachedText?.text === "string" && cachedText.text.length > event.text.length
+      const text = hasLongerCachedText ? cachedText.text : event.text
+      const key = hasLongerCachedText ? `${event.tweetId ?? event.key}\u0000${text}` : event.key
+      if (!cached && !hasLongerCachedText) {
         if (authorHandle) debug("author stats cache miss", { handle: authorHandle, cachedHandles: [...authorStatsByHandle.keys()].slice(0, 12) })
         return event
       }
 
-      debug("author stats cache hit", {
-        handle: authorHandle,
-        followers: cached.authorFollowers,
-        following: cached.authorFollowing,
-        tweets: cached.authorTweets,
-      })
+      if (hasLongerCachedText) {
+        debug("tweet text cache hit", {
+          tweetId: event.tweetId,
+          visibleLength: event.text.length,
+          cachedLength: cachedText.text.length,
+        })
+      }
+
+      if (cached) {
+        debug("author stats cache hit", {
+          handle: authorHandle,
+          followers: cached.authorFollowers,
+          following: cached.authorFollowing,
+          tweets: cached.authorTweets,
+        })
+      }
 
       return {
         ...event,
+        text,
+        key,
+        textTruncated: event.textTruncated && !hasLongerCachedText,
         authorMetadata: {
-          authorHandle: cached.authorHandle,
-          authorFollowers: cached.authorFollowers ?? event.authorMetadata.authorFollowers,
-          authorFollowing: cached.authorFollowing ?? event.authorMetadata.authorFollowing,
-          authorTweets: cached.authorTweets ?? event.authorMetadata.authorTweets,
-          authorVerified: cached.authorVerified ?? event.authorMetadata.authorVerified,
-          authorMetadataSource: "loaded-x-response",
+          authorHandle: cached?.authorHandle ?? event.authorMetadata.authorHandle,
+          authorFollowers: cached?.authorFollowers ?? event.authorMetadata.authorFollowers,
+          authorFollowing: cached?.authorFollowing ?? event.authorMetadata.authorFollowing,
+          authorTweets: cached?.authorTweets ?? event.authorMetadata.authorTweets,
+          authorVerified: cached?.authorVerified ?? event.authorMetadata.authorVerified,
+          authorMetadataSource: cached ? "loaded-x-response" : event.authorMetadata.authorMetadataSource,
         },
       }
     }
@@ -222,7 +245,7 @@ const isXAuthorStats = (value: unknown): value is XAuthorStats => {
       })
     }
 
-    const renderExistingTweetsWithCachedStats = () => {
+    const renderExistingTweetsWithCachedData = () => {
       let rendered = 0
       for (const root of document.querySelectorAll("article[data-testid='tweet']")) {
         const text = extractTweetText(root).replace(/\s+/g, " ").trim()
@@ -234,13 +257,15 @@ const isXAuthorStats = (value: unknown): value is XAuthorStats => {
           key: text,
           previousKey: text,
           changed: false,
+          tweetId: extractTweetStatusId(root),
+          textTruncated: tweetTextIsTruncated(root),
           hasMedia: tweetHasMedia(root),
           authorMetadata: extractTweetAuthorMetadata(root),
           createdAtMetadata: extractTweetCreatedAtMetadata(root),
         })
         renderTweetBadgeSafely(enriched)
       }
-      debug("refreshed visible tweets from author stats cache", { rendered, cachedHandles: authorStatsByHandle.size })
+      debug("refreshed visible tweets from loaded X cache", { rendered, cachedHandles: authorStatsByHandle.size, cachedTweets: tweetTextById.size })
     }
 
     globalThis.addEventListener("message", (event) => {
@@ -255,7 +280,24 @@ const isXAuthorStats = (value: unknown): value is XAuthorStats => {
         accepted += 1
       }
       debug("received author stats batch", { accepted, cachedHandles: authorStatsByHandle.size })
-      if (updated) renderExistingTweetsWithCachedStats()
+      if (updated) renderExistingTweetsWithCachedData()
+    })
+    globalThis.addEventListener("message", (event) => {
+      const message = event.data as ScoreboarAuthorMetadataMessage
+      if (message.type !== "scoreboar.tweetTextBatch" || !Array.isArray(message.payload)) return
+      let updated = false
+      let accepted = 0
+      for (const item of message.payload) {
+        if (!isXTweetText(item)) continue
+        const existing = tweetTextById.get(item.tweetId)
+        if (!existing || item.text.length > existing.text.length) {
+          tweetTextById.set(item.tweetId, item)
+          updated = true
+        }
+        accepted += 1
+      }
+      debug("received tweet text batch", { accepted, cachedTweets: tweetTextById.size })
+      if (updated) renderExistingTweetsWithCachedData()
     })
     debug("requesting author stats cache replay")
     globalThis.postMessage({ type: "scoreboar.requestAuthorMetadataBatch" }, "*")
