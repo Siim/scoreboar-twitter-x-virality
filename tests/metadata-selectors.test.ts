@@ -10,8 +10,10 @@ import {
   extractComposerText,
   extractTextFeatures,
   extractTweetAuthorMetadata,
+  extractTweetStatusId,
   preprocessMetadata,
   tweetHasMedia,
+  tweetTextIsTruncated,
 } from "../src/contracts"
 
 const queryRoot = (matches: Record<string, string | null>) => ({
@@ -161,6 +163,21 @@ describe("selectors contract", () => {
     expect(article).not.toBeNull()
 
     expect(extractTweetAuthorMetadata(article!).authorHandle).toBe("real_author")
+  })
+
+  it("detects truncated timeline text and extracts the status id passively", () => {
+    const dom = new JSDOM(`
+      <article data-testid="tweet">
+        <div data-testid="tweetText">This timeline post ends early because X collapsed it</div>
+        <a href="/siimh/status/2060333451543290334">May 29</a>
+        <span>Show more</span>
+      </article>
+    `)
+    const article = dom.window.document.querySelector("article")
+    expect(article).not.toBeNull()
+
+    expect(extractTweetStatusId(article!)).toBe("2060333451543290334")
+    expect(tweetTextIsTruncated(article!)).toBe(true)
   })
 })
 

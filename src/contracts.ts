@@ -147,6 +147,25 @@ export const tweetHasMedia = (tweetRoot: QueryRoot): boolean => {
   return tweetRoot.querySelector(X_TWEET_MEDIA_SELECTOR) !== null
 }
 
+export const extractTweetStatusId = (tweetRoot: QueryAllRoot): string | null => {
+  for (const link of [...tweetRoot.querySelectorAll('a[href*="/status/"]')]) {
+    const href = link.getAttribute("href") ?? ""
+    const match = href.match(/\/status\/(\d+)(?:$|[/?#])/u)
+    if (match?.[1]) return match[1]
+  }
+
+  return null
+}
+
+export const tweetTextIsTruncated = (tweetRoot: QueryAllRoot): boolean => {
+  const text = tweetRoot.textContent ?? ""
+  if (!/show more/iu.test(text)) return false
+
+  return [...tweetRoot.querySelectorAll("a, button, span, div")].some((node) => {
+    return node.textContent?.replace(/\s+/g, " ").trim().toLowerCase() === "show more"
+  })
+}
+
 export const composerHasMedia = (composerRoot: QueryRoot): boolean => {
   return composerRoot.querySelector(X_COMPOSER_MEDIA_SELECTOR) !== null
 }

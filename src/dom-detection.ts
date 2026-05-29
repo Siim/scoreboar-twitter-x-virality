@@ -5,12 +5,14 @@ import {
   currentTimeMetadata,
   extractCurrentAccountMetadata,
   extractComposerText,
+  extractTweetStatusId,
   extractTweetAuthorMetadata,
   extractTweetCreatedAtMetadata,
   extractTweetText,
   type TweetAuthorMetadata,
   type TweetCreatedAtMetadata,
   tweetHasMedia,
+  tweetTextIsTruncated,
 } from "./contracts.js"
 
 export const SCOREBOAR_TWEET_PROCESSED_ATTRIBUTE = "data-scoreboar-tweet-processed" as const
@@ -23,6 +25,8 @@ export interface TweetFoundEvent {
   readonly key: string
   readonly previousKey: string | null
   readonly changed: boolean
+  readonly tweetId: string | null
+  readonly textTruncated: boolean
   readonly hasMedia: boolean
   readonly authorMetadata: TweetAuthorMetadata
   readonly createdAtMetadata?: TweetCreatedAtMetadata
@@ -137,6 +141,8 @@ export const createScoreboarDomDetector = (options: ScoreboarDomDetectorOptions 
         key,
         previousKey,
         changed: previousKey !== null,
+        tweetId: extractTweetStatusId(tweetRoot),
+        textTruncated: tweetTextIsTruncated(tweetRoot),
         hasMedia: tweetHasMedia(tweetRoot),
         authorMetadata: extractTweetAuthorMetadata(tweetRoot),
         createdAtMetadata: extractTweetCreatedAtMetadata(tweetRoot),
