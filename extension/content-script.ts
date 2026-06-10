@@ -1,4 +1,4 @@
-import { extractTweetAuthorMetadata, extractTweetCreatedAtMetadata, extractTweetStatusId, extractTweetText, tweetHasMedia, tweetTextIsTruncated } from "../src/contracts.js"
+import { extractTweetAuthorMetadata, extractTweetCreatedAtMetadata, extractTweetStatusId, extractTweetText, selectTweetTextForScoring, tweetHasMedia, tweetTextIsTruncated } from "../src/contracts.js"
 import { createScoreboarDomDetector } from "../src/dom-detection.js"
 import type { ComposerFoundEvent, TweetFoundEvent } from "../src/dom-detection.js"
 import { createComposerHintController } from "../src/composer-hints.js"
@@ -173,19 +173,20 @@ const isXTweetText = (value: unknown): value is XTweetText => {
       const authorHandle = event.authorMetadata.authorHandle
       const cached = authorHandle ? authorStatsByHandle.get(authorHandle.toLowerCase()) : undefined
       const cachedText = event.tweetId ? tweetTextById.get(event.tweetId) : undefined
-      const hasLongerCachedText = typeof cachedText?.text === "string" && cachedText.text.length > event.text.length
-      const text = hasLongerCachedText ? cachedText.text : event.text
-      const key = hasLongerCachedText ? `${event.tweetId ?? event.key}\u0000${text}` : event.key
-      if (!cached && !hasLongerCachedText) {
+      const text = selectTweetTextForScoring(event.text, cachedText?.text)
+      const hasCachedScoringText = text !== event.text
+      const key = hasCachedScoringText ? `${event.tweetId ?? event.key}\u0000${text}` : event.key
+      if (!cached && !hasCachedScoringText) {
         if (authorHandle) debug("author stats cache miss", { handle: authorHandle, cachedHandles: [...authorStatsByHandle.keys()].slice(0, 12) })
         return event
       }
 
-      if (hasLongerCachedText) {
+      if (hasCachedScoringText && cachedText) {
         debug("tweet text cache hit", {
           tweetId: event.tweetId,
           visibleLength: event.text.length,
           cachedLength: cachedText.text.length,
+          scoringLength: text.length,
         })
       }
 
@@ -202,7 +203,7 @@ const isXTweetText = (value: unknown): value is XTweetText => {
         ...event,
         text,
         key,
-        textTruncated: event.textTruncated && !hasLongerCachedText,
+        textTruncated: event.textTruncated && !hasCachedScoringText,
         authorMetadata: {
           authorHandle: cached?.authorHandle ?? event.authorMetadata.authorHandle,
           authorFollowers: cached?.authorFollowers ?? event.authorMetadata.authorFollowers,

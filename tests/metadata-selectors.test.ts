@@ -12,6 +12,8 @@ import {
   extractTweetAuthorMetadata,
   extractTweetStatusId,
   preprocessMetadata,
+  selectTweetTextForScoring,
+  stripLeadingReplyMentions,
   tweetHasMedia,
   tweetTextIsTruncated,
 } from "../src/contracts"
@@ -178,6 +180,21 @@ describe("selectors contract", () => {
 
     expect(extractTweetStatusId(article!)).toBe("2060333451543290334")
     expect(tweetTextIsTruncated(article!)).toBe(true)
+  })
+
+  it("strips reply-only leading mentions from loaded text before scoring", () => {
+    const visible = "true. AI can make the research painfully specific."
+    const loaded = "@_ShantanuKul true. AI can make the research painfully specific."
+
+    expect(stripLeadingReplyMentions(loaded)).toBe(visible)
+    expect(selectTweetTextForScoring(visible, loaded)).toBe(visible)
+  })
+
+  it("keeps GraphQL full text for truncated timeline posts after reply mentions", () => {
+    const visible = "true. AI can make the research painfully"
+    const loaded = "@_ShantanuKul true. AI can make the research painfully specific."
+
+    expect(selectTweetTextForScoring(visible, loaded)).toBe("true. AI can make the research painfully specific.")
   })
 })
 

@@ -103,6 +103,26 @@ const normalizeLogMetric = (value: number | null | undefined): number => {
   return Math.log1p(Math.max(0, finiteNumberOrZero(value))) / 20
 }
 
+const normalizeVisibleText = (value: string): string => value.replace(/\s+/g, " ").trim()
+
+export const stripLeadingReplyMentions = (text: string): string => {
+  return normalizeVisibleText(text).replace(/^(?:@[A-Za-z0-9_]{1,20}\s+)+/u, "").trim()
+}
+
+export const selectTweetTextForScoring = (visibleText: string, loadedText: string | null | undefined): string => {
+  const visible = normalizeVisibleText(visibleText)
+  const loaded = typeof loadedText === "string" ? normalizeVisibleText(loadedText) : ""
+  if (loaded.length === 0 || loaded.length <= visible.length) return visible
+
+  const loadedWithoutReplyMentions = stripLeadingReplyMentions(loaded)
+  if (loadedWithoutReplyMentions.length >= visible.length && loadedWithoutReplyMentions.startsWith(visible)) {
+    return loadedWithoutReplyMentions
+  }
+
+  if (loaded.startsWith(visible)) return loaded
+  return loaded
+}
+
 export const extractTextFeatures = (text: string | null | undefined): TextFeatureCounts => {
   const safeText = typeof text === "string" ? text : ""
   const hashtagCount = safeText.match(/(^|[^\p{L}\p{N}_])#[\p{L}\p{N}_]+/gu)?.length ?? 0
