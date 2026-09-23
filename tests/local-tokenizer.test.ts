@@ -1,14 +1,19 @@
 import { existsSync, readFileSync } from "node:fs"
 import { resolve } from "node:path"
-import { describe, expect, it } from "vitest"
+import { beforeAll, describe, expect, it } from "vitest"
 import { createByteLevelBpeTokenizer, type ByteLevelBpeTokenizerJson } from "../src/local-tokenizer"
 
 const tokenizerPath = resolve("model/v5-source/tokenizer/tokenizer.json")
 const describeIfTokenizer = existsSync(tokenizerPath) ? describe : describe.skip
 
 describeIfTokenizer("local ByteLevel BPE tokenizer", () => {
-  const tokenizerJson = JSON.parse(readFileSync(tokenizerPath, "utf8")) as ByteLevelBpeTokenizerJson
-  const tokenizer = createByteLevelBpeTokenizer(tokenizerJson)
+  // Read the file in beforeAll: describe.skip still runs this body to collect
+  // the tests, and a fresh clone has no model/ folder, so a read here fails the run
+  let tokenizer: ReturnType<typeof createByteLevelBpeTokenizer>
+  beforeAll(() => {
+    const tokenizerJson = JSON.parse(readFileSync(tokenizerPath, "utf8")) as ByteLevelBpeTokenizerJson
+    tokenizer = createByteLevelBpeTokenizer(tokenizerJson)
+  })
 
   it.each([
     {
