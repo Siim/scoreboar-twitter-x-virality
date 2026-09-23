@@ -49,7 +49,7 @@ The technical measure is rank correlation with real performance: 0.34 for v8, 0.
 
 ## Install
 
-The quickest way: download `scoreboar-v8-extension.zip` from the [latest release](https://github.com/Siim/scoreboar-twitter-x-virality/releases/latest) and unzip it. Or build it yourself:
+The quickest way: download the `scoreboar-…-extension.zip` from the [latest release](https://github.com/Siim/scoreboar-twitter-x-virality/releases/latest) and unzip it. Or build it yourself:
 
 ```bash
 npm install
