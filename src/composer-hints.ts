@@ -374,6 +374,9 @@ const setPanelState = (
       const item = panel.ownerDocument.createElement("li")
       item.className = "scoreboar-composer-panel__hint"
       item.textContent = hint.message
+      // Next to the score and controls the pill has room for only part of a hint, so hovering shows all of it.
+      // Screen readers already get the whole text: the ellipsis is CSS only.
+      item.title = hint.message
       item.setAttribute("data-scoreboar-composer-hint-id", hint.id)
       return item
     }))

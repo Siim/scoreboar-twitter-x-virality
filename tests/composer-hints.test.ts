@@ -177,6 +177,43 @@ describe("composer hint UI", () => {
     expect(panel?.hidden).toBe(false)
   })
 
+  it("shows the whole hint on hover, since the pill cuts it short", async () => {
+    const dom = new JSDOM(fixture("composer.html"))
+    const controller = createComposerHintController({
+      document: dom.window.document,
+      debounceMs: 0,
+      scheduler: (callback) => {
+        callback()
+        return undefined
+      },
+    })
+    const detector = createScoreboarDomDetector({
+      root: dom.window.document,
+      onComposerFound: (event) => controller.renderComposerHints(event),
+    })
+    const composer = dom.window.document.querySelector<HTMLElement>(X_SELECTORS.composerPrimary)
+    expect(composer).not.toBeNull()
+    const shownHint = () => dom.window.document.querySelector<HTMLElement>(".scoreboar-composer-panel__hint")
+
+    composer!.textContent = "nice update"
+    detector.scan()
+    await flushPromises()
+
+    // A hint that does not fit stays on its line and ends in an ellipsis.
+    const css = dom.window.document.querySelector("style[data-scoreboar-composer-style='true']")?.textContent ?? ""
+    expect(css).toMatch(/\.scoreboar-composer-panel__hint \{[^}]*text-overflow: ellipsis;[^}]*white-space: nowrap;/u)
+    expect(shownHint()?.textContent).toBe("Open with a clear question, claim, or tension.")
+    expect(shownHint()?.title).toBe("Open with a clear question, claim, or tension.")
+
+    // A different hint brings its own full text.
+    composer!.textContent = "Why is this chart so wild?"
+    detector.scan()
+    await flushPromises()
+    expect(shownHint()?.getAttribute("data-scoreboar-composer-hint-id")).toBe("media_cue")
+    expect(shownHint()?.title).toBe("Add or reference an image/video when it clarifies the point.")
+    expect(shownHint()?.textContent).toBe(shownHint()?.title)
+  })
+
   it("places modal composer hints near the dialog chrome instead of over typed text", async () => {
     const dom = new JSDOM(`
       <div role="dialog" aria-label="Post composer">
