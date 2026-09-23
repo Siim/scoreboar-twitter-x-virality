@@ -224,6 +224,56 @@ export const preprocessMetadata = (input: MetadataPreprocessInput = {}, now: Dat
   }
 }
 
+/** The author fields a scoring request carries, when it carries any. */
+export type ModelAuthorBlock = {
+  readonly authorHandle: string | null
+  readonly authorFollowers: number
+  readonly authorFollowing: number | null
+  readonly authorTweets: number | null
+  readonly authorVerified: boolean | null
+  readonly authorVerifiedType: string | null
+  readonly authorCreatedAt: string
+  readonly authorFavourites: number | null
+}
+
+/**
+ * The author as a request hands it to the model: all of it or none of it.
+ * Drafts and feed posts both go through here, so a draft and the post it
+ * becomes get the same author.
+ *
+ * Every v8 training row had follower counts, and the only rows without a join
+ * date were the v1 rows, mostly viral-search picks. Counts with
+ * author_details_known = 0 therefore read as "an old viral post" and lift a
+ * score by tens of percentile points. A missing author (author_known = 0) was
+ * not in training either, but scores close to the full block. A verified type
+ * on its own is worse: author_org_verified is not gated on author_known, and
+ * no training row had it without the rest. A join date without the likes-given
+ * count still lifts v8 by about 18 points (log_favourites = 0 never occurs with
+ * a known join date in training), and missing following or post counts read
+ * as zero the same way. So the author goes out only when the follower,
+ * following, post and likes-given counts and a parseable join date are all
+ * there, and not at all otherwise.
+ */
+export const authorBlockForModel = (author: Partial<TweetAuthorMetadata> | null | undefined): ModelAuthorBlock | null => {
+  const followers = finiteOrNull(author?.authorFollowers)
+  const following = finiteOrNull(author?.authorFollowing)
+  const tweets = finiteOrNull(author?.authorTweets)
+  const favourites = finiteOrNull(author?.authorFavourites)
+  const createdAt = author?.authorCreatedAt ?? null
+  if (!author || followers === null || following === null || tweets === null || favourites === null) return null
+  if (createdAt === null || parseTimeInput(createdAt) === null) return null
+  return {
+    authorHandle: author.authorHandle ?? null,
+    authorFollowers: followers,
+    authorFollowing: following,
+    authorTweets: tweets,
+    authorVerified: author.authorVerified ?? null,
+    authorVerifiedType: author.authorVerifiedType ?? null,
+    authorCreatedAt: createdAt,
+    authorFavourites: favourites,
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Reading posts off x.com
 // ---------------------------------------------------------------------------
@@ -580,8 +630,11 @@ const windowedAuthorStats = (text: string, handleIndex: number): SerializedAutho
     authorTweets,
     authorVerified,
     authorVerifiedType: extractStringField(windowText, "verified_type"),
-    authorCreatedAt: extractStringField(windowText, "created_at"),
-    authorFavourites: extractNumberField(windowText, "favourites_count"),
+    // Never the details from a window: a post's created_at sits right before its
+    // author's screen_name, and a join date is what lets the counts reach the model
+    // (authorBlockForModel), so a post's time here would score the author as brand new.
+    authorCreatedAt: null,
+    authorFavourites: null,
   }
 }
 

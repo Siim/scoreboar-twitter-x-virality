@@ -1,6 +1,7 @@
 import {
   X_COMPOSER_SELECTOR,
   X_SELECTORS,
+  authorBlockForModel,
   extractSerializedAuthorMetadata,
   extractTweetAuthorMetadata,
   extractTweetCreatedAtMetadata,
@@ -13,6 +14,7 @@ import {
   readComposerDraft,
   splitTrailingPostLink,
   stripReplyMentionPrefix,
+  type ModelAuthorBlock,
   type TweetAuthorMetadata,
   type TweetCreatedAtMetadata,
   type TweetMediaFacts,
@@ -391,29 +393,17 @@ export const describeTweetRoot = (tweetRoot: Element): DescribedTweet => {
 /**
  * The signed-in author as a draft is scored: the same sources, in the same
  * order, as the feed uses for that author's posts (loaded X stats, then data
- * the page serialized). All of it or nothing: the published post is scored
- * with X's full user object, so a block with counts but no account age would
- * sit further from that score than an unknown author does.
+ * the page serialized), cut to all of it or nothing by the same rule the feed
+ * applies to that author's posts (authorBlockForModel).
  */
 export const readViewerAuthorMetadata = (
   document: Document,
   knownHandle: string | null,
   statsByHandle: ReadonlyMap<string, XAuthorStats>,
-): Record<string, unknown> | null => {
+): ModelAuthorBlock | null => {
   const handle = knownHandle ?? extractViewerHandle(document)
   if (!handle) return null
-  const author = mergeAuthorMetadata(handle, statsByHandle.get(handle.toLowerCase()), extractSerializedAuthorMetadata(document, handle))
-  if (author.authorFollowers === null || parseTimeInput(author.authorCreatedAt) === null) return null
-  return {
-    authorHandle: author.authorHandle,
-    authorFollowers: author.authorFollowers,
-    authorFollowing: author.authorFollowing,
-    authorTweets: author.authorTweets,
-    authorVerified: author.authorVerified,
-    authorVerifiedType: author.authorVerifiedType ?? null,
-    authorCreatedAt: author.authorCreatedAt ?? null,
-    authorFavourites: author.authorFavourites ?? null,
-  }
+  return authorBlockForModel(mergeAuthorMetadata(handle, statsByHandle.get(handle.toLowerCase()), extractSerializedAuthorMetadata(document, handle)))
 }
 
 const defaultScheduler: ScanScheduler = (callback, delayMs) => {

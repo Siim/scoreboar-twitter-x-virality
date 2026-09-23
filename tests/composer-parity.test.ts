@@ -428,4 +428,31 @@ describe("a draft is scored with the inputs its published post will have", () =>
     expect(authorFields(draftAfter.metadata)).toEqual(authorFields(postAfter.metadata))
     expect(draftAfter.metadata.authorFollowers).toBe(813)
   })
+
+  it("an author whose join date is not known is left out on both sides, never sent as counts alone", async () => {
+    const authorFields = (metadata: Record<string, unknown>) => Object.fromEntries(Object.entries(metadata).filter(([key]) => key.startsWith("author") && key !== "authorMetadataSource"))
+    // The bootstrap's user object without created_at or favourites_count: counts and a verified flag only.
+    const state = JSON.parse(INITIAL_STATE) as { entities: { users: { entities: Record<string, Record<string, unknown>> } } }
+    const { created_at: _joined, favourites_count: _favourites, ...countsOnly } = state.entities.users.entities["42"]!
+    state.entities.users.entities["42"] = countsOnly
+    const withoutJoinDate = (html: string) => html.replace(INITIAL_STATE, JSON.stringify(state))
+
+    const draft = await scoreDraft(withoutJoinDate(composerPage("gm")))
+    const post = await scorePost(withoutJoinDate(postPage("gm")))
+    expectSameModelInput(draft, post)
+    expect(authorFields(draft.metadata)).toEqual({})
+    expect(authorFields(post.metadata)).toEqual({})
+    expect(modelView(post).features).toMatchObject({ author_known: 0, author_details_known: 0, author_verified: 0, author_org_verified: 0 })
+
+    // X's own user object for the post, also without a join date, changes nothing.
+    const payload = createTweetPayload({ full_text: "gm", display_text_range: [0, 2] }) as { data: { create_tweet: { tweet_results: { result: { core: { user_results: { result: { core: Record<string, unknown> } } } } } } } }
+    delete payload.data.create_tweet.tweet_results.result.core.user_results.result.core.created_at
+    const { facts, stats } = capture(payload)
+    expect(stats.get(VIEWER)?.authorFollowers).toBe(813)
+    const draftAfter = await scoreDraft(withoutJoinDate(composerPage("gm")), stats)
+    const postAfter = await scorePost(withoutJoinDate(postPage("gm")), facts, stats)
+    expectSameModelInput(draftAfter, postAfter)
+    expect(authorFields(draftAfter.metadata)).toEqual({})
+    expect(authorFields(postAfter.metadata)).toEqual({})
+  })
 })

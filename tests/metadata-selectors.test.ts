@@ -256,6 +256,13 @@ describe("the signed-in account", () => {
       authorFavourites: 9800,
     })
   })
+
+  it("from JSON escaped in a script string, gives counts but never a join date or likes given", () => {
+    // X puts a post's created_at right before its author; the text window cannot tell whose it is.
+    const payload = { tweet: { created_at: "Wed Sep 23 12:00:00 +0000 2026", user: { screen_name: "Ada_Builds", followers_count: 812, created_at: "Sun Apr 03 23:48:02 +0000 2022", favourites_count: 9800 } } }
+    const document = doc(`<script>window.__DATA__=JSON.parse(${JSON.stringify(JSON.stringify(payload))});</script>`)
+    expect(extractSerializedAuthorMetadata(document, "ada_builds")).toMatchObject({ authorFollowers: 812, authorCreatedAt: null, authorFavourites: null })
+  })
 })
 
 describe("draft text rules X applies when it posts", () => {

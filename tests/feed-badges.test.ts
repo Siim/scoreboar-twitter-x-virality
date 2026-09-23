@@ -10,6 +10,13 @@ import {
   createScoreboarDomDetector,
   createUnavailableScoreTextResult,
   describeTweetRoot,
+  enrichTweetEvent,
+  extractXAuthorStatsFromGraphql,
+  extractXTweetFactsFromGraphql,
+  preprocessMetadata,
+  type TweetFoundEvent,
+  type XAuthorStats,
+  type XTweetFacts,
 } from "../src/index"
 import type { ScoreTextResult } from "../src/inference-runtime"
 
@@ -472,46 +479,59 @@ describe("feed badge UI", () => {
     expect(badge ? detailsForBadge(badge)?.textContent : null).not.toContain("Media:")
   })
 
-  it("passes same-page author metadata into scoring and details", async () => {
-    const seenMetadata: Record<string, unknown>[] = []
-    const dom = new JSDOM(`
-      <article data-testid="tweet">
-        <a href="/nikitaboar">@nikitaboar</a>
-        <span aria-label="Verified account">Verified</span>
-        <div hidden>12.4K Followers 321 Following 777 Posts</div>
-        <div data-testid="tweetText">Author metadata fixture</div>
-      </article>
-    `)
-    const badgeController = createFeedBadgeController({
-      document: dom.window.document,
-      scorer: {
-        scoreTweet: async (text, metadata) => {
-          seenMetadata.push(metadata)
-          return scoredResult(text, 1)
+  it("passes same-page author metadata into scoring only with the author's join date, and never into details", async () => {
+    const scoreWithPage = async (script: string) => {
+      const seenMetadata: Record<string, unknown>[] = []
+      const dom = new JSDOM(`
+        <article data-testid="tweet">
+          <a href="/nikitaboar">@nikitaboar</a>
+          <span aria-label="Verified account">Verified</span>
+          <div hidden>12.4K Followers 321 Following 777 Posts</div>
+          <div data-testid="tweetText">Author metadata fixture</div>
+        </article>
+        <script>${script}</script>
+      `)
+      const badgeController = createFeedBadgeController({
+        document: dom.window.document,
+        scorer: {
+          scoreTweet: async (text, metadata) => {
+            seenMetadata.push(metadata)
+            return scoredResult(text, 1)
+          },
         },
-      },
-    })
-    const rendered: Array<Promise<void>> = []
-    const detector = createScoreboarDomDetector({
-      root: dom.window.document,
-      onTweetFound: (event) => {
-        rendered.push(badgeController.renderTweetBadge(event))
-      },
-    })
+      })
+      const rendered: Array<Promise<void>> = []
+      const detector = createScoreboarDomDetector({
+        root: dom.window.document,
+        onTweetFound: (event) => {
+          rendered.push(badgeController.renderTweetBadge(event))
+        },
+      })
 
-    detector.scan()
-    await Promise.all(rendered)
+      detector.scan()
+      await Promise.all(rendered)
+      const badge = dom.window.document.querySelector<HTMLElement>(badgeSelector)
+      return { metadata: seenMetadata[0]!, details: badge ? detailsForBadge(badge) : null }
+    }
 
-    const badge = dom.window.document.querySelector<HTMLElement>(badgeSelector)
-    expect(seenMetadata[0]).toMatchObject({
+    // Counts from the chrome alone would score the post as an old viral one: no author at all instead.
+    const countsOnly = await scoreWithPage("")
+    expect(Object.keys(countsOnly.metadata).filter((key) => key.startsWith("author"))).toEqual(["authorMetadataSource"])
+    expect(countsOnly.metadata.authorMetadataSource).toBe("defaulted")
+
+    const user = { screen_name: "nikitaboar", followers_count: 12_391, created_at: "Sun Apr 03 23:48:02 +0000 2022", favourites_count: 55 }
+    const withJoinDate = await scoreWithPage(`window.__INITIAL_STATE__=${JSON.stringify({ entities: { users: { entities: { 9: user } } } })};`)
+    expect(withJoinDate.metadata).toMatchObject({
       authorHandle: "nikitaboar",
       authorFollowers: 12400,
       authorFollowing: 321,
       authorTweets: 777,
       authorVerified: true,
+      authorCreatedAt: "Sun Apr 03 23:48:02 +0000 2022",
+      authorFavourites: 55,
       authorMetadataSource: "same-page-dom",
     })
-    const details = badge ? detailsForBadge(badge) : null
+    const details = withJoinDate.details
     expect(details?.textContent).not.toContain("Author stats:")
     expect(details?.textContent).not.toContain("@nikitaboar:")
   })
@@ -559,5 +579,138 @@ describe("a long post the timeline cut short", () => {
     timers.at(-1)?.()
     expect(badge.getAttribute(SCOREBOAR_BADGE_STATE_ATTRIBUTE)).toBe("unavailable")
     expect(scoredTexts).toHaveLength(1)
+  })
+})
+
+describe("the author a feed post is scored with", () => {
+  const HANDLE = "ada_builds"
+  const POST_ID = "1839000000000000001"
+  const JOINED = "Sun Apr 03 23:48:02 +0000 2022"
+
+  const article = (chrome = "") => `
+    <article data-testid="tweet" tabindex="0">
+      <div data-testid="Tweet-User-Avatar"><div data-testid="UserAvatar-Container-${HANDLE}"><a href="/${HANDLE}"></a></div></div>
+      <div data-testid="User-Name">
+        <a href="/${HANDLE}"><span>Ada</span></a><a href="/${HANDLE}"><span>@${HANDLE}</span></a>
+        <a href="/${HANDLE}/status/${POST_ID}"><time datetime="2026-09-23T12:10:00.000Z">1m</time></a>
+      </div>
+      ${chrome}
+      <div data-testid="tweetText" lang="en">Shipping the fix today</div>
+    </article>`
+  const page = (chrome = "", script = "") => `<!doctype html><body><main>${article(chrome)}</main><script>${script}</script></body>`
+  const restUser = (extra: Record<string, unknown> = {}) => ({ id_str: "42", screen_name: HANDLE, followers_count: 812, friends_count: 301, statuses_count: 4120, ...extra })
+  const bootstrap = (user: Record<string, unknown>) => `window.__INITIAL_STATE__=${JSON.stringify({ session: { user_id: "42" }, entities: { users: { entities: { 42: user } } } })};`
+  // The same user in JSON escaped into a JS string, after a post's own created_at: only the old windowed read finds it.
+  const escapedState = (user: Record<string, unknown>) => `window.__DATA__=JSON.parse(${JSON.stringify(JSON.stringify({ tweet: { created_at: "Wed Sep 23 12:00:00 +0000 2026" }, user }))});`
+
+  /** A timeline response carrying the post and its author, as the page listener captures it. */
+  const loaded = (userCore: Record<string, unknown>, userLegacy: Record<string, unknown>, extra: Record<string, unknown> = {}) => {
+    const payload = { data: { home: { home_timeline_urt: { instructions: [{ entries: [{ content: { itemContent: { tweet_results: { result: {
+      __typename: "Tweet",
+      rest_id: POST_ID,
+      core: { user_results: { result: { __typename: "User", rest_id: "42", core: { screen_name: HANDLE, ...userCore }, legacy: userLegacy, ...extra } } },
+      legacy: { created_at: "Wed Sep 23 12:10:00 +0000 2026", full_text: "Shipping the fix today", is_quote_status: false, entities: { urls: [] } },
+    } } } } }] }] } } } }
+    return {
+      facts: new Map(extractXTweetFactsFromGraphql(payload).map((facts) => [facts.tweetId, facts] as const)),
+      stats: new Map(extractXAuthorStatsFromGraphql(payload).map((stats) => [stats.authorHandle.toLowerCase(), stats] as const)),
+    }
+  }
+  const counts = { followers_count: 813, friends_count: 301, statuses_count: 4121, favourites_count: 9801, verified: false }
+
+  /** The feed path, end to end: detector event, X's facts and author stats merged, request building, the scorer call. */
+  const scorePost = async (html: string, captured?: { readonly facts: ReadonlyMap<string, XTweetFacts>, readonly stats: ReadonlyMap<string, XAuthorStats> }) => {
+    const dom = new JSDOM(html, { url: "https://x.com/home" })
+    const seen: Record<string, unknown>[] = []
+    const controller = createFeedBadgeController({
+      document: dom.window.document,
+      scorer: {
+        scoreTweet: async (text, metadata) => {
+          seen.push(metadata)
+          return scoredResult(text, 0.5)
+        },
+      },
+    })
+    const rendered: Array<Promise<void>> = []
+    createScoreboarDomDetector({
+      root: dom.window.document,
+      onTweetFound: (event: TweetFoundEvent) => {
+        rendered.push(controller.renderTweetBadge(enrichTweetEvent(event, captured?.facts ?? new Map(), captured?.stats ?? new Map())))
+      },
+    }).scan()
+    await Promise.all(rendered)
+    expect(seen).toHaveLength(1)
+    const metadata = seen[0]!
+    const { features } = preprocessMetadata({ ...metadata, text: "x" })
+    return {
+      metadata,
+      authorKeys: Object.keys(metadata).filter((key) => key.startsWith("author") && key !== "authorMetadataSource"),
+      author: { known: features.author_known, detailsKnown: features.author_details_known, verified: features.author_verified, orgVerified: features.author_org_verified },
+    }
+  }
+
+  const WHOLE = ["authorHandle", "authorFollowers", "authorFollowing", "authorTweets", "authorVerified", "authorVerifiedType", "authorCreatedAt", "authorFavourites"]
+  const known = { known: 1, detailsKnown: 1, verified: 0, orgVerified: 0 }
+  const unknown = { known: 0, detailsKnown: 0, verified: 0, orgVerified: 0 }
+
+  it("X's loaded user object with its join date: the whole author", async () => {
+    const post = await scorePost(page(), loaded({ created_at: JOINED }, counts))
+    expect(post.author).toEqual(known)
+    expect(post.authorKeys).toEqual(WHOLE)
+    expect(post.metadata).toMatchObject({ authorFollowers: 813, authorCreatedAt: JOINED, authorFavourites: 9801, authorMetadataSource: "loaded-x-response" })
+  })
+
+  it("X's loaded user object without a join date: no author", async () => {
+    const post = await scorePost(page(), loaded({}, counts))
+    expect(post.author).toEqual(unknown)
+    expect(post.authorKeys).toEqual([])
+    expect(post.metadata.authorMetadataSource).toBe("defaulted")
+  })
+
+  it("a loaded user object without a join date, completed by the join date the page serialized", async () => {
+    const post = await scorePost(page("", bootstrap(restUser({ created_at: JOINED, favourites_count: 9800 }))), loaded({}, counts))
+    expect(post.author).toEqual(known)
+    expect(post.metadata).toMatchObject({ authorFollowers: 813, authorCreatedAt: JOINED, authorFavourites: 9801 })
+  })
+
+  it("only the page's serialized user: whole with a join date, nothing without one", async () => {
+    const withJoinDate = await scorePost(page("", bootstrap(restUser({ created_at: JOINED, favourites_count: 9800 }))))
+    expect(withJoinDate.author).toEqual(known)
+    expect(withJoinDate.authorKeys).toEqual(WHOLE)
+    expect(withJoinDate.metadata).toMatchObject({ authorFollowers: 812, authorCreatedAt: JOINED, authorMetadataSource: "same-page-dom" })
+
+    const withoutJoinDate = await scorePost(page("", bootstrap(restUser({ is_blue_verified: true }))))
+    expect(withoutJoinDate.author).toEqual(unknown)
+    expect(withoutJoinDate.authorKeys).toEqual([])
+  })
+
+  it("a user found only in escaped JSON never takes a neighbouring post's time as its join date", async () => {
+    const post = await scorePost(page("", escapedState(restUser())))
+    expect(post.author).toEqual(unknown)
+    expect(post.authorKeys).toEqual([])
+  })
+
+  it("only counts shown in the author's chrome: no author", async () => {
+    const post = await scorePost(page(`<div hidden>12.4K Followers 321 Following 777 Posts</div>`))
+    expect(post.author).toEqual(unknown)
+    expect(post.authorKeys).toEqual([])
+  })
+
+  it("only a verified badge: no author, and no verified flag on its own", async () => {
+    const post = await scorePost(page(`<svg aria-label="Verified account" data-testid="icon-verified"></svg>`))
+    expect(post.author).toEqual(unknown)
+    expect(post.authorKeys).toEqual([])
+  })
+
+  it("only a verified type, without counts: no author, so no org flag on an unknown author", async () => {
+    const post = await scorePost(page(), loaded({}, { verified: false, verified_type: "Business" }, { is_blue_verified: true }))
+    expect(post.author).toEqual(unknown)
+    expect(post.authorKeys).toEqual([])
+  })
+
+  it("nothing about the author: no author", async () => {
+    const post = await scorePost(page())
+    expect(post.author).toEqual(unknown)
+    expect(post.authorKeys).toEqual([])
   })
 })

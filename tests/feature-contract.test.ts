@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
-import { METADATA_V2_FEATURE_ORDER, normalizePostText, parseTimeInput, preprocessMetadata, type MetadataPreprocessInput } from "../src/contracts"
+import { METADATA_V2_FEATURE_ORDER, authorBlockForModel, normalizePostText, parseTimeInput, preprocessMetadata, type MetadataPreprocessInput, type TweetAuthorMetadata } from "../src/contracts"
 
 interface ContractCase {
   readonly name: string
@@ -56,5 +56,55 @@ describe("feature contract v2 matches the Python trainer", () => {
 
   it("keeps a placeholder already produced by page extraction", () => {
     expect(normalizePostText("read this  [link]  now")).toBe("read this [link] now")
+  })
+})
+
+describe("the author a request gives the model: all of it or none", () => {
+  const JOINED = "Sun Apr 03 23:48:02 +0000 2022"
+  const counts = { authorHandle: "ada", authorFollowers: 812, authorFollowing: 301, authorTweets: 4120, authorVerified: true, authorVerifiedType: "Business" }
+
+  it("keeps the whole block when the counts come with a join date that parses", () => {
+    expect(authorBlockForModel({ ...counts, authorCreatedAt: JOINED, authorFavourites: 9800, authorMetadataSource: "loaded-x-response" })).toEqual({
+      ...counts,
+      authorCreatedAt: JOINED,
+      authorFavourites: 9800,
+    })
+    // Zero followers is a known count, not a missing one.
+    expect(authorBlockForModel({ authorFollowers: 0, authorFollowing: 0, authorTweets: 1, authorFavourites: 0, authorCreatedAt: "2026-09-01T00:00:00.000Z" })).toMatchObject({ authorFollowers: 0, authorHandle: null, authorVerifiedType: null })
+  })
+
+  it("drops everything when the join date or the counts are missing", () => {
+    const partial: ReadonlyArray<Partial<TweetAuthorMetadata> | null | undefined> = [
+      null,
+      undefined,
+      {},
+      counts,
+      { ...counts, authorCreatedAt: "" },
+      { ...counts, authorCreatedAt: "not a date" },
+      // A join date without the likes-given count, or with a count missing.
+      { ...counts, authorCreatedAt: JOINED },
+      { ...counts, authorCreatedAt: JOINED, authorFavourites: 9800, authorFollowing: null },
+      { ...counts, authorCreatedAt: JOINED, authorFavourites: 9800, authorTweets: undefined },
+      { ...counts, authorFollowers: null, authorCreatedAt: JOINED },
+      { ...counts, authorFollowers: Number.NaN, authorCreatedAt: JOINED },
+      { authorVerified: true },
+      { authorVerifiedType: "Government" },
+    ]
+    for (const author of partial) expect(authorBlockForModel(author), JSON.stringify(author)).toBeNull()
+  })
+
+  it("never hands the model counts without details, or an org badge without an author", () => {
+    const inputs: ReadonlyArray<Partial<TweetAuthorMetadata>> = [
+      counts,
+      { ...counts, authorCreatedAt: JOINED },
+      { ...counts, authorFollowers: null, authorCreatedAt: JOINED },
+      { authorVerifiedType: "Business" },
+      { authorFollowers: 0 },
+    ]
+    for (const author of inputs) {
+      const { features } = preprocessMetadata({ text: "gm", ...(authorBlockForModel(author) ?? {}) })
+      expect(features.author_details_known, JSON.stringify(author)).toBe(features.author_known)
+      expect(features.author_org_verified, JSON.stringify(author)).toBeLessThanOrEqual(features.author_known)
+    }
   })
 })

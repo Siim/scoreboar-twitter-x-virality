@@ -1,3 +1,4 @@
+import { authorBlockForModel } from "./contracts.js"
 import type { ScanScheduler, TweetFoundEvent } from "./dom-detection.js"
 import { type ScoreTextResult, createUnavailableScoreTextResult } from "./inference-runtime.js"
 import { type ScoreLabelSummary, mapScoreTextResultToLabel } from "./score-mapping.js"
@@ -31,30 +32,31 @@ export interface FeedBadgeScoreRequest {
 // Long enough for X's own response about the post to arrive after it renders.
 const TRUNCATED_TEXT_WAIT_MS = 3_000
 
-/** What a post is scored with: everything the page and X's responses say about it. */
-export const tweetScoreRequest = (event: TweetFoundEvent): FeedBadgeScoreRequest => ({
-  text: event.text,
-  metadata: {
-    tweetId: event.tweetId ?? null,
-    hasMedia: event.hasMedia,
-    hasPhoto: event.mediaFacts?.hasPhoto ?? null,
-    hasVideo: event.mediaFacts?.hasVideo ?? null,
-    hasCard: event.mediaFacts?.hasCard ?? null,
-    isQuote: event.isQuote ?? null,
-    createdAt: event.createdAtMetadata?.createdAt ?? null,
-    createdAtSource: event.createdAtMetadata?.createdAtSource ?? "defaulted",
-    authorHandle: event.authorMetadata.authorHandle,
-    authorFollowers: event.authorMetadata.authorFollowers,
-    authorFollowing: event.authorMetadata.authorFollowing,
-    authorTweets: event.authorMetadata.authorTweets,
-    authorVerified: event.authorMetadata.authorVerified,
-    authorVerifiedType: event.authorMetadata.authorVerifiedType ?? null,
-    authorCreatedAt: event.authorMetadata.authorCreatedAt ?? null,
-    authorFavourites: event.authorMetadata.authorFavourites ?? null,
-    authorMetadataSource: event.authorMetadata.authorMetadataSource,
-    source: "tweet",
-  },
-})
+/**
+ * What a post is scored with: everything the page and X's responses say about
+ * it. The author goes whole or not at all, by the rule a draft's author follows
+ * (authorBlockForModel): counts read off the page or a user object without a
+ * join date would score the post as an old viral one.
+ */
+export const tweetScoreRequest = (event: TweetFoundEvent): FeedBadgeScoreRequest => {
+  const author = authorBlockForModel(event.authorMetadata)
+  return {
+    text: event.text,
+    metadata: {
+      tweetId: event.tweetId ?? null,
+      hasMedia: event.hasMedia,
+      hasPhoto: event.mediaFacts?.hasPhoto ?? null,
+      hasVideo: event.mediaFacts?.hasVideo ?? null,
+      hasCard: event.mediaFacts?.hasCard ?? null,
+      isQuote: event.isQuote ?? null,
+      createdAt: event.createdAtMetadata?.createdAt ?? null,
+      createdAtSource: event.createdAtMetadata?.createdAtSource ?? "defaulted",
+      ...(author ?? {}),
+      authorMetadataSource: author ? event.authorMetadata.authorMetadataSource : "defaulted",
+      source: "tweet",
+    },
+  }
+}
 
 // The meter carries the pending and unavailable states; only a score is text.
 const BADGE_TEXT_BY_STATE: Readonly<Record<FeedBadgeState, string>> = {
