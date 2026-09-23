@@ -131,6 +131,16 @@ const COMPOSER_PANEL_CSS = `
 .scoreboar-composer-panel__flag:empty {
   display: none;
 }
+.scoreboar-composer-panel__note {
+  color: var(--sb-muted);
+  font: 500 0.75rem/1 var(--sb-caps);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.scoreboar-composer-panel__note:empty {
+  display: none;
+}
 .scoreboar-composer-panel__hints {
   border-inline-start: 1px solid var(--sb-line);
   display: inline-flex;
@@ -234,7 +244,10 @@ const createPanelElement = (document: Document): HTMLElement => {
   value.className = "scoreboar-composer-panel__value"
   const flag = document.createElement("span")
   flag.className = "scoreboar-composer-panel__flag"
-  score.append(createMeter(document), value, flag)
+  const note = document.createElement("span")
+  note.className = "scoreboar-composer-panel__note"
+  // The note qualifies the number, so it sits right after it.
+  score.append(createMeter(document), value, note, flag)
 
   const hints = document.createElement("ul")
   hints.className = "scoreboar-composer-panel__hints"
@@ -328,6 +341,11 @@ const composerScoreText = (summary: ScoreLabelSummary): string => {
   return summary.odds ? `Beats ${summary.interestingScore}%` : `${summary.interestingScore}%`
 }
 
+// Shown on the pill itself, not only in its tooltip: without the account's
+// stats every author feature reads as zero, while the same post in the feed is
+// scored with them, so the two numbers can be far apart.
+const AUTHOR_UNKNOWN_NOTE = "no account stats"
+
 const composerFlag = (summary: ScoreLabelSummary): string => {
   if (summary.status !== "scored") return ""
   const id = summary.insight?.id
@@ -340,13 +358,15 @@ const setPanelState = (
   valueText: string,
   hints: readonly ComposerHint[],
   summary?: ScoreLabelSummary,
+  authorUnknown = false,
 ) => {
   panel.hidden = state === "empty"
   panel.setAttribute(SCOREBOAR_COMPOSER_PANEL_STATE_ATTRIBUTE, state)
+  const scoredWithoutAuthor = authorUnknown && state === "ready"
   const label = state === "ready" && summary?.status === "scored" && summary.odds
     ? `Scoreboar: this draft beats ${summary.interestingScore}% of ordinary posts for an account this size`
     : `Scoreboar: ${valueText}`
-  panel.setAttribute("aria-label", label)
+  panel.setAttribute("aria-label", scoredWithoutAuthor ? `${label}, scored without your account's stats` : label)
 
   const value = panel.querySelector<HTMLElement>(".scoreboar-composer-panel__value")
   if (value) {
@@ -358,6 +378,8 @@ const setPanelState = (
   }
   const flag = panel.querySelector<HTMLElement>(".scoreboar-composer-panel__flag")
   if (flag) flag.textContent = summary ? composerFlag(summary) : ""
+  const note = panel.querySelector<HTMLElement>(".scoreboar-composer-panel__note")
+  if (note) note.textContent = scoredWithoutAuthor ? AUTHOR_UNKNOWN_NOTE : ""
   const meter = panel.querySelector(".scoreboar-meter")
   if (meter) {
     if (state === "pending") {
@@ -463,9 +485,9 @@ export const createComposerHintController = (options: ComposerHintControllerOpti
       }
 
       const summary = mapScoreTextResultToLabel(result)
-      setPanelState(panel, summary.status === "scored" ? "ready" : "unavailable", composerScoreText(summary), activeHints, summary)
       // The published post is scored with its author's stats; say so when this draft could not be.
       const authorUnknown = options.viewerMetadata !== undefined && !viewer
+      setPanelState(panel, summary.status === "scored" ? "ready" : "unavailable", composerScoreText(summary), activeHints, summary, authorUnknown)
       panel.toggleAttribute(SCOREBOAR_COMPOSER_AUTHOR_UNKNOWN_ATTRIBUTE, authorUnknown)
       if (authorUnknown) {
         panel.setAttribute("title", "Scored without your account's stats, which X has not loaded yet. The score may change once you post.")

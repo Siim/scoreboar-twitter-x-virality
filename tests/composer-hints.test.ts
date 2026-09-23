@@ -430,6 +430,38 @@ describe("composer scoring inputs", () => {
     expect(shownAfter).not.toBe(shownBefore)
   })
 
+  it("says on the pill itself, next to the score, when a draft was scored without the account's stats", async () => {
+    const statsByHandle = new Map<string, XAuthorStats>()
+    const { document, controller, detector, composer } = setup(page(""), statsByHandle, async (text, metadata) => {
+      return scoredResult(text, metadata.authorFollowers === undefined ? 0.2 : 0.6)
+    })
+    composer.textContent = "Launch day"
+    detector.scan()
+    for (let tick = 0; tick < 6; tick += 1) await flushPromises()
+    const panel = document.querySelector<HTMLElement>(panelSelector)!
+    const note = panel.querySelector<HTMLElement>(".scoreboar-composer-panel__note")
+    expect(panel.getAttribute(SCOREBOAR_COMPOSER_PANEL_STATE_ATTRIBUTE)).toBe("ready")
+    expect(note?.textContent).toBe("no account stats")
+    expect(note?.previousElementSibling?.className).toContain("scoreboar-composer-panel__value")
+    expect(panel.querySelector(".scoreboar-composer-panel__value")?.textContent).toMatch(/%$/u)
+    expect(panel.getAttribute("aria-label")).toMatch(/, scored without your account's stats$/u)
+
+    statsByHandle.set("ada", {
+      authorHandle: "ada",
+      authorFollowers: 813,
+      authorFollowing: 3,
+      authorTweets: 9,
+      authorVerified: false,
+      authorCreatedAt: "Sun Apr 03 23:48:02 +0000 2022",
+      authorFavourites: 7,
+      authorMetadataSource: "loaded-x-response",
+    })
+    controller.refresh()
+    for (let tick = 0; tick < 6; tick += 1) await flushPromises()
+    expect(note?.textContent).toBe("")
+    expect(panel.getAttribute("aria-label")).not.toMatch(/without your account's stats/u)
+  })
+
   it("never lets a slower score for the draft before an attachment overwrite the newer one", async () => {
     const resolvers: Array<() => void> = []
     const seen: Record<string, unknown>[] = []

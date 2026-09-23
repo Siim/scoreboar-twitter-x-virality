@@ -706,16 +706,92 @@ export const extractTweetAuthorMetadata = (tweetRoot: QueryAllRoot): TweetAuthor
   }
 }
 
+// Elements that hold lines of their own in an editor: the <div> lines of a plain
+// contenteditable and Draft.js's block wrappers, the <p> paragraphs of Lexical
+// or ProseMirror, list items, and anything marked as a Draft.js block. Spans
+// (Draft.js's [data-offset-key] leaves included) stay inside their line.
+const EDITOR_LINE_TAGS = new Set(["DIV", "P", "LI", "UL", "OL", "BLOCKQUOTE", "PRE", "H1", "H2", "H3", "H4", "H5", "H6"])
+// Whitespace a browser folds away between blocks: the markup's own, not the writer's.
+const FOLDED_WHITESPACE = /^[\t\n\f\r ]*$/u
+
+const holdsEditorLines = (element: Element): boolean => {
+  return EDITOR_LINE_TAGS.has(element.tagName.toUpperCase()) || element.getAttribute("data-block") === "true"
+}
+
 /**
- * A draft's text from its own editor element. X's editor keeps each line in
- * its own [data-block] element, so lines are joined back with newlines.
+ * An editor's lines as the page draws them, whatever editor it is: every
+ * block starts a new line, a <br> ends one, and a block with nothing in it (or
+ * only a <br>) is one empty line. A <br> that closes a block adds no line of
+ * its own: editors put one there to keep an empty or last line open. Inside a
+ * line, text reads as extractRichText reads it (emoji by their alt text, one
+ * placeholder per outside link), less the zero-width U+FEFF some editors park
+ * the caret on.
+ */
+const readEditorLines = (editor: Element): string[] => {
+  const lines: string[] = []
+  // The line being read, or null right after a block or a <br> closed one.
+  let line: string | null = null
+  const add = (text: string) => {
+    line = (line ?? "") + text
+  }
+  const closeLine = () => {
+    if (line !== null && !FOLDED_WHITESPACE.test(line)) lines.push(line)
+    line = null
+  }
+  // Whether the node shows anything: text, an emoji, a link, a line break or a line.
+  const walk = (node: Node): boolean => {
+    if (isTextNode(node)) {
+      const text = node.data.replace(/﻿/gu, "")
+      if (text) add(text)
+      return !FOLDED_WHITESPACE.test(text)
+    }
+    if (!isElementNode(node)) return false
+    const tag = node.tagName.toUpperCase()
+    if (tag === "BR") {
+      lines.push(line ?? "")
+      line = null
+      return true
+    }
+    if (tag === "IMG") {
+      const alt = node.getAttribute("alt") ?? ""
+      if (alt) add(alt)
+      return alt !== ""
+    }
+    if (tag === "A" && isExternalHref(node.getAttribute("href") ?? "")) {
+      add(PAGE_LINK_STAND_IN)
+      return true
+    }
+    const block = holdsEditorLines(node)
+    if (block) closeLine()
+    let shows = false
+    for (const child of node.childNodes) shows = walk(child) || shows
+    if (!block) return shows
+    if (shows) {
+      closeLine()
+    } else {
+      line = null
+      lines.push("")
+    }
+    return true
+  }
+  for (const child of editor.childNodes) walk(child)
+  closeLine()
+  return lines
+}
+
+/**
+ * A draft's text from its own editor element, one line per line the editor
+ * draws. Draft.js (X's editor) keeps each line in a [data-block] element and
+ * is read block by block; any other editor, or a plain contenteditable, is
+ * read by its block structure (readEditorLines), so paragraphs in <div> or <p>
+ * elements keep their line breaks and blank lines instead of running together.
  */
 export const readComposerDraft = (composer: Element): string => {
   const blocks = [...composer.querySelectorAll('[data-block="true"]')]
   if (blocks.length > 0) {
     return blocks.map((block) => extractRichText(block).replace(/\n+$/u, "")).join("\n")
   }
-  return extractRichText(composer)
+  return readEditorLines(composer).join("\n")
 }
 
 /** The draft in the first composer under `root`. */
