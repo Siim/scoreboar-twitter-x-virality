@@ -108,6 +108,8 @@ The main fields in the response:
 
 The example's README has the full request and response. The extension does not use this service; it runs the model itself.
 
+Send the author's details complete (followers, following, posts, likes given and join date) or not at all. v8 overrates posts whose author has counts but no join date, a leftover from its older training data; the example drops an incomplete author and reports `authorUsed: false`.
+
 ## Development
 
 ```bash

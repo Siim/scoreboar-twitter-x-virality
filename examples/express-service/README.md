@@ -132,7 +132,9 @@ Numbers are shortened here; the service returns them unrounded.
 | `probabilities` | Calibrated chance of each fifth, `very_low` to `very_high`: a softmax of `virality_logits`. The graph already divides the logits by the fitted temperature, so they are used as they come. |
 | `numericScores` | 13 explanation scores (`hook_quality`, `clarity_score`, `novelty_score` and so on), learned from grok-4.7 labels. 0 to 1: the graph ends in a sigmoid, and the teacher's 0 to 10 labels were divided by 10 for training. They describe the text; the forecast is `performance`. |
 | `booleanScores` | Chance of each of 5 flags (`is_rage_bait`, `is_clickbait`, `is_ai_slop`, `needs_context`, `has_clear_takeaway`): a sigmoid of the calibrated `boolean_logits`. |
-| `input` | What the model read: the normalized text, its token count (at most 128; longer posts keep their opening), and the 22 metadata values by name. Check here that a request meant what you think. |
+| `input` | What the model read: the normalized text, its token count (at most 128; longer posts keep their opening), the 22 metadata values by name, and `authorUsed`. Check here that a request meant what you think. |
+
+The author goes in whole or not at all. Send `authorFollowers`, `authorFollowing`, `authorTweets`, `authorFavourites` and `authorCreatedAt` together; if any is missing the service leaves the author out and returns `authorUsed: false`. Partial author data makes v8 overrate a post by tens of percentile points, while no author at all scores normally.
 
 ## Score many posts
 
@@ -142,7 +144,7 @@ Numbers are shortened here; the service returns them unrounded.
 curl -s http://127.0.0.1:8787/score/batch \
   -H 'content-type: application/json' \
   -d '{"posts": [
-    {"text": "Shipped the new onboarding today. 7 steps down to 3.", "metadata": {"authorFollowers": 12400}},
+    {"text": "Shipped the new onboarding today. 7 steps down to 3.", "metadata": {"authorFollowers": 12400, "authorFollowing": 380, "authorTweets": 5100, "authorFavourites": 9200, "authorCreatedAt": "2015-03-02T09:00:00Z"}},
     {"text": "hot take: most productivity systems are procrastination with extra steps"}
   ]}'
 ```

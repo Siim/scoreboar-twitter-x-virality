@@ -151,6 +151,8 @@ Text is normalized before tokenizing: URLs become `[link]`, and media links are 
 
 Unknown values are neutral and flagged, never zero-filled. For example, a quote status that is unknown is 0.25, and media of unknown type counts as 0.7 photo and 0.3 video.
 
+**Send the author whole or not at all.** Give the follower, following, post and likes-given counts together with the join date, or leave the author out. v8 has a training artefact here: the older training posts had counts but no join date or likes-given count, and many were viral picks, so counts without those details lift a score by about 38 percentile points on the median post (18 with only the likes-given count missing). Leaving the author out entirely costs no measurable ranking accuracy. `authorBlockForModel` in `src/contracts.ts` enforces this, and the extension and the example service both go through it.
+
 In order, with counts and lengths taken from the normalized text:
 
 | # | Name | Value |

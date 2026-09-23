@@ -5,6 +5,7 @@ import * as ort from "onnxruntime-node"
 import {
   FEATURE_CONTRACT_VERSION,
   METADATA_V2_FEATURE_ORDER,
+  authorBlockForModel,
   parseTimeInput,
   preprocessMetadata,
   type MetadataPreprocessInput,
@@ -59,6 +60,8 @@ export interface ScoreResponse {
     readonly normalizedText: string
     readonly tokens: number
     readonly features: MetadataV2FeatureMap
+    /** False when the author fields were incomplete and left out (see scorePosts). */
+    readonly authorUsed: boolean
   }
 }
 
@@ -227,7 +230,21 @@ const createScorer = async () => {
     const batch = posts.length
     // The same preparation the extension runs, text normalization included.
     // Tokenizing the raw text instead would feed the model inputs it never saw.
-    const prepared = posts.map((post) => preprocessMetadata({ ...post.metadata, text: post.text }))
+    // The author goes in whole or not at all, as in the extension: v8 reads
+    // counts without the join date and likes-given count as an old viral post
+    // and scores it tens of points too high, while no author scores normally.
+    const prepared = posts.map((post) => {
+      const {
+        authorFollowers, authorFollowing, authorTweets, authorFavourites,
+        authorVerified, authorVerifiedType, authorCreatedAt, ...rest
+      } = post.metadata
+      const joined = parseTimeInput(authorCreatedAt)
+      const author = authorBlockForModel({
+        authorFollowers, authorFollowing, authorTweets, authorFavourites,
+        authorVerified, authorVerifiedType, authorCreatedAt: joined ? joined.toISOString() : null,
+      })
+      return { ...preprocessMetadata({ ...rest, ...(author ?? {}), text: post.text }), authorUsed: author !== null }
+    })
     // Unpadded: the model's answer does not depend on padding, and a typical
     // post is about 45 tokens against the 128 cap. A batch pads only to its
     // longest post, with those positions masked out.
@@ -282,6 +299,7 @@ const createScorer = async () => {
           normalizedText: item.normalizedText,
           tokens: encoded[row].inputIds.length,
           features: item.features,
+          authorUsed: item.authorUsed,
         },
       }
     })
