@@ -1,6 +1,6 @@
 {
   "name": "scoreboar-express-service-example",
-  "version": "0.1.0",
+  "version": "0.8.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,12 +8,16 @@
     "build": "tsc",
     "start": "node dist/examples/express-service/server.js"
   },
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
     "express": "^5.1.0",
-    "onnxruntime-node": "^1.22.0"
+    "onnxruntime-node": "^1.26.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.5",
+    "@types/node": "^22.0.0",
     "typescript": "^5.4.0"
   }
 }

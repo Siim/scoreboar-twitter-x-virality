@@ -77,7 +77,7 @@ The main fields in the response:
 - `performance.percentile`: 0 to 1, the number behind "Beats N% of posts".
 - `performance.engagementMultiple` and `performance.reachMultiple`: expected engagement and views as multiples of what the account usually gets.
 - `probabilities`: the calibrated chance of each fifth, `very_low` to `very_high`.
-- `numericScores` and `booleanScores`: the explanation heads, scores from 0 to 10 and flag chances from 0 to 1.
+- `numericScores` and `booleanScores`: the explanation heads, scores and flag chances, both from 0 to 1.
 
 The example's README has the full request and response. The extension does not use this service; it runs the model itself.
 
