@@ -8,7 +8,9 @@ import {
   X_SELECTORS,
   createComposerHintController,
   createScoreboarDomDetector,
+  readViewerAuthorMetadata,
   type ScoreTextResult,
+  type XAuthorStats,
 } from "../src/index"
 
 const fixture = (name: string) => readFileSync(resolve("fixtures", name), "utf8")
@@ -27,7 +29,7 @@ const scoredResult = (text: string, highProbability: number): ScoreTextResult =>
   message: "deterministic composer fixture score",
   model: {
     provider: "local-onnx",
-    path: "extension/assets/model/v5-full.onnx",
+    path: "extension/assets/model/scoreboar-v8.onnx",
     available: true,
   },
   metadataVector: [text.length],
@@ -88,7 +90,7 @@ describe("composer hint UI", () => {
       return hint.getAttribute("data-scoreboar-composer-hint-id")
     })
     expect(panel?.getAttribute(SCOREBOAR_COMPOSER_PANEL_STATE_ATTRIBUTE)).toBe("unavailable")
-    expect(panel?.textContent).toContain("S—")
+    expect(panel?.querySelector(".scoreboar-composer-panel__value")?.textContent).toBe("No score")
     expect(panel?.textContent).toContain("Open with a clear question, claim, or tension.")
     expect(hintIds.length).toBeGreaterThanOrEqual(1)
     expect(hintIds).toContain("hook_clarity")
@@ -127,9 +129,9 @@ describe("composer hint UI", () => {
 
     const panel = dom.window.document.querySelector<HTMLElement>(panelSelector)
     expect(panel?.getAttribute(SCOREBOAR_COMPOSER_PANEL_STATE_ATTRIBUTE)).toBe("ready")
-    expect(panel?.querySelector(".scoreboar-composer-panel__value")?.textContent).toBe("🎯  75% · hook")
-    expect(typeof seenMetadata[0]?.createdAtHour).toBe("number")
-    expect(typeof seenMetadata[0]?.createdAtDay).toBe("number")
+    expect(panel?.querySelector(".scoreboar-composer-panel__value")?.textContent).toBe("75%")
+    expect(panel?.querySelector(".scoreboar-meter")?.getAttribute("data-level")).toBe("4")
+    expect(Number.isFinite(Date.parse(String(seenMetadata[0]?.createdAt)))).toBe(true)
     expect(panel?.querySelector("img.scoreboar-boar")).toBeNull()
   })
 
@@ -277,5 +279,155 @@ describe("composer hint UI", () => {
     expect(panel?.getAttribute("data-scoreboar-composer-dragged")).toBe("true")
     expect(panel?.style.getPropertyValue("--scoreboar-composer-left")).toBe("250px")
     expect(panel?.style.getPropertyValue("--scoreboar-composer-top")).toBe("140px")
+  })
+})
+
+describe("composer scoring inputs", () => {
+  const toolbar = `<div><div data-testid="toolBar"><button>Post</button></div></div>`
+  const page = (script: string, extra = "") => new JSDOM(`<!doctype html><body>
+    <nav><button data-testid="SideNav_AccountSwitcher_Button"><div data-testid="UserAvatar-Container-ada"></div></button></nav>
+    <main><div><div data-testid="tweetTextarea_0" role="textbox" contenteditable="true"></div>${extra}${toolbar}</div></main>
+    <script>${script}</script></body>`)
+  const bootstrap = (user: Record<string, unknown>) => `window.__INITIAL_STATE__=${JSON.stringify({ session: { user_id: "1" }, entities: { users: { entities: { 1: { screen_name: "ada", ...user } } } } })};`
+  const immediate = (callback: () => void) => {
+    callback()
+    return undefined
+  }
+
+  const setup = (dom: JSDOM, statsByHandle: Map<string, XAuthorStats>, scoreComposer: (text: string, metadata: Record<string, unknown>) => Promise<ScoreTextResult>) => {
+    const document = dom.window.document
+    const controller = createComposerHintController({
+      document,
+      debounceMs: 0,
+      scheduler: immediate,
+      now: () => new Date("2026-09-23T12:00:00.000Z"),
+      viewerMetadata: () => readViewerAuthorMetadata(document, null, statsByHandle),
+      scorer: { scoreComposer },
+    })
+    const detector = createScoreboarDomDetector({ root: document, onComposerFound: (event) => controller.renderComposerHints(event) })
+    const composer = document.querySelector<HTMLElement>(X_SELECTORS.composerPrimary)!
+    return { document, controller, detector, composer }
+  }
+
+  it("scores the draft for its author from the page bootstrap before any X response is captured", async () => {
+    const seen: Record<string, unknown>[] = []
+    const { detector, composer } = setup(
+      page(bootstrap({ followers_count: 812, friends_count: 3, statuses_count: 9, favourites_count: 7, created_at: "Sun Apr 03 23:48:02 +0000 2022" })),
+      new Map(),
+      async (text, metadata) => {
+        seen.push(metadata)
+        return scoredResult(text, 0.5)
+      },
+    )
+    composer.textContent = "Launch day"
+    detector.scan()
+    await flushPromises()
+    expect(seen[0]).toMatchObject({
+      authorHandle: "ada",
+      authorFollowers: 812,
+      authorCreatedAt: "Sun Apr 03 23:48:02 +0000 2022",
+      authorFavourites: 7,
+      createdAt: "2026-09-23T12:00:00.000Z",
+      hasMedia: false,
+      hasPhoto: false,
+      hasVideo: false,
+      isQuote: false,
+      hasCard: false,
+    })
+  })
+
+  it("sends no author at all rather than counts without the account's age", async () => {
+    const seen: Record<string, unknown>[] = []
+    const { detector, composer } = setup(page(bootstrap({ followers_count: 812 })), new Map(), async (text, metadata) => {
+      seen.push(metadata)
+      return scoredResult(text, 0.5)
+    })
+    composer.textContent = "Launch day"
+    detector.scan()
+    await flushPromises()
+    expect(Object.keys(seen[0] ?? {}).filter((key) => key.startsWith("author"))).toEqual([])
+  })
+
+  it("rescores an open draft when the author's stats arrive, keeping the current number up meanwhile", async () => {
+    const seen: Record<string, unknown>[] = []
+    const statsByHandle = new Map<string, XAuthorStats>()
+    let release: (() => void) | null = null
+    const { document, controller, detector, composer } = setup(page(""), statsByHandle, async (text, metadata) => {
+      seen.push(metadata)
+      if (seen.length === 2) await new Promise<void>((resolve) => { release = resolve })
+      return scoredResult(text, seen.length === 1 ? 0 : 1)
+    })
+    composer.textContent = "Launch day"
+    detector.scan()
+    for (let tick = 0; tick < 6; tick += 1) await flushPromises()
+    expect(seen[0]?.authorFollowers).toBeUndefined()
+    const panel = document.querySelector<HTMLElement>(panelSelector)!
+    const shownBefore = panel.querySelector(".scoreboar-composer-panel__value")?.textContent
+    expect(shownBefore).toMatch(/%$/u)
+
+    // Unchanged author: a cache hit, no second model call.
+    controller.refresh()
+    await flushPromises()
+    expect(seen).toHaveLength(1)
+
+    statsByHandle.set("ada", {
+      authorHandle: "ada",
+      authorFollowers: 813,
+      authorFollowing: 3,
+      authorTweets: 9,
+      authorVerified: false,
+      authorCreatedAt: "Sun Apr 03 23:48:02 +0000 2022",
+      authorFavourites: 7,
+      authorMetadataSource: "loaded-x-response",
+    })
+    controller.refresh()
+    await flushPromises()
+    expect(seen).toHaveLength(2)
+    expect(seen[1]).toMatchObject({ authorFollowers: 813, authorCreatedAt: "Sun Apr 03 23:48:02 +0000 2022" })
+    expect(panel.getAttribute(SCOREBOAR_COMPOSER_PANEL_STATE_ATTRIBUTE)).toBe("ready")
+    expect(panel.querySelector(".scoreboar-composer-panel__value")?.textContent).toBe(shownBefore)
+    release!()
+    for (let tick = 0; tick < 6; tick += 1) await flushPromises()
+    const shownAfter = panel.querySelector(".scoreboar-composer-panel__value")?.textContent
+    expect(shownAfter).toMatch(/%$/u)
+    expect(shownAfter).not.toBe(shownBefore)
+  })
+
+  it("never lets a slower score for the draft before an attachment overwrite the newer one", async () => {
+    const resolvers: Array<() => void> = []
+    const seen: Record<string, unknown>[] = []
+    const dom = page("", `<div id="strip"></div>`)
+    const { document, detector, composer } = setup(dom, new Map(), async (text, metadata) => {
+      seen.push(metadata)
+      const probability = metadata.hasPhoto === true ? 0.9 : 0.1
+      await new Promise<void>((resolve) => resolvers.push(resolve))
+      return scoredResult(text, probability)
+    })
+    composer.textContent = "Launch day"
+    detector.scan()
+    document.getElementById("strip")!.innerHTML = `<div data-testid="attachments"><img src="blob:https://x.com/p"></div>`
+    detector.scan()
+    expect(seen.map((metadata) => metadata.hasPhoto)).toEqual([false, true])
+    resolvers[1]!()
+    await flushPromises()
+    await flushPromises()
+    const panel = document.querySelector<HTMLElement>(panelSelector)!
+    const newest = panel.querySelector(".scoreboar-composer-panel__value")?.textContent
+    resolvers[0]!()
+    await flushPromises()
+    await flushPromises()
+    expect(panel.querySelector(".scoreboar-composer-panel__value")?.textContent).toBe(newest)
+  })
+
+  it("scores a bare domain as the link X will make of it", async () => {
+    const texts: string[] = []
+    const { detector, composer } = setup(page(""), new Map(), async (text) => {
+      texts.push(text)
+      return scoredResult(text, 0.5)
+    })
+    composer.textContent = "Built this: x11.social"
+    detector.scan()
+    await flushPromises()
+    expect(texts).toEqual(["Built this: https://x11.social"])
   })
 })

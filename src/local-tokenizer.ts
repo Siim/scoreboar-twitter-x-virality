@@ -14,7 +14,10 @@ export interface EncodedTextInput {
 }
 
 export interface ByteLevelBpeTokenizer {
-  readonly encode: (text: string, maxLength: number) => EncodedTextInput
+  /** For batching unpadded encodings: pad to the longest row with this id and a 0 mask. */
+  readonly padId: number
+  /** `pad: false` returns only the real tokens; the model is length-agnostic, so padding is wasted work. */
+  readonly encode: (text: string, maxLength: number, options?: { readonly pad?: boolean }) => EncodedTextInput
 }
 
 const TOKEN_PATTERN = /'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+/gu
@@ -109,7 +112,8 @@ export const createByteLevelBpeTokenizer = (tokenizerJson: ByteLevelBpeTokenizer
   }
 
   return {
-    encode: (text, maxLength) => {
+    padId,
+    encode: (text, maxLength, options = {}) => {
       const tokenIds: number[] = [clsId]
       const matches = text.match(TOKEN_PATTERN) ?? []
       for (const match of matches) {
@@ -123,7 +127,7 @@ export const createByteLevelBpeTokenizer = (tokenizerJson: ByteLevelBpeTokenizer
 
       const inputIds = tokenIds.slice(0, maxLength)
       const attentionMask = inputIds.map(() => 1)
-      while (inputIds.length < maxLength) {
+      while (options.pad !== false && inputIds.length < maxLength) {
         inputIds.push(padId)
         attentionMask.push(0)
       }

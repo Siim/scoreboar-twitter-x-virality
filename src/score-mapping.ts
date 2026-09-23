@@ -1,4 +1,5 @@
-import type { BooleanScores, NumericScores, ScoreProbabilities, ScoreTextResult } from "./inference-runtime.js"
+import { METADATA_V2_FEATURE_ORDER } from "./contracts.js"
+import type { BooleanScores, NumericScores, PerformancePrediction, ScoreProbabilities, ScoreTextResult } from "./inference-runtime.js"
 
 export const SCORE_LABEL_ORDER = ["Very Low", "Low", "Medium", "High", "Very High"] as const
 
@@ -15,14 +16,24 @@ export interface ScoreStability {
   readonly reasons: readonly string[]
 }
 
+/** Calibrated chances of landing in the top or bottom fifth of ordinary posts. */
+export interface PerformanceOdds {
+  readonly top: number
+  readonly bottom: number
+}
+
 export interface InterestingnessScoreLabel {
   readonly status: "scored"
+  /** 0-100. With a v8 result: the post beats this share of ordinary posts, relative to its author's reach. */
   readonly interestingScore: number
   readonly tag: InterestingnessTag
   readonly insight: ScoreInsight | null
   readonly labelText: string
   readonly confidence: number
   readonly stability: ScoreStability
+  readonly odds?: PerformanceOdds
+  readonly engagementMultiple?: number
+  readonly reachMultiple?: number
 }
 
 export interface UnavailableScoreLabel {
@@ -57,7 +68,7 @@ export interface ScoreInsight {
 }
 
 export interface ComposerHint {
-  readonly id: "hook_clarity" | "length" | "specificity" | "cta" | "media_cue"
+  readonly id: "hook_clarity" | "length" | "specificity" | "media_cue"
   readonly label: string
   readonly message: string
   readonly active: boolean
@@ -245,7 +256,6 @@ export const pickScoreInsight = (
     { id: "slop", label: "slop", value: scoreSignalValue(booleanScores.is_ai_slop) },
     { id: "clickbait", label: "clickbait", value: scoreSignalValue(booleanScores.is_clickbait) },
     { id: "rage", label: "rage", value: scoreSignalValue(booleanScores.is_rage_bait) },
-    { id: "needs_context", label: "needs context", value: scoreSignalValue(booleanScores.needs_context) },
     { id: "clear_takeaway", label: "clear", value: scoreSignalValue(booleanScores.has_clear_takeaway) },
   ]
   const numericCandidates: readonly ScoreInsight[] = [
@@ -271,13 +281,59 @@ export const pickScoreInsight = (
   return bestNumeric ?? null
 }
 
+const AUTHOR_KNOWN_INDEX = METADATA_V2_FEATURE_ORDER.indexOf("author_known")
+
+/**
+ * How much to trust the shown bucket, from the calibrated probabilities alone:
+ * the chance the post really lands in that bucket or a neighbouring one.
+ */
+const calibratedStability = (withinOne: number, metadataVector?: readonly number[]): ScoreStability => {
+  const score = roundScore(withinOne * 100)
+  const tier: ScoreStabilityTier = score >= 70 ? "solid" : score >= 50 ? "approx" : "uncertain"
+  const reasons: string[] = []
+  if (metadataVector && metadataVector[AUTHOR_KNOWN_INDEX] === 0) reasons.push("author unknown")
+  reasons.push(`${score}% within one bucket`)
+  return { tier, score, label: stabilityLabel(tier), reasons }
+}
+
+const mapPerformanceToInterestingness = (
+  normalized: readonly number[],
+  performance: PerformancePrediction,
+  options: { readonly booleanScores?: BooleanScores; readonly numericScores?: NumericScores; readonly metadataVector?: readonly number[] },
+): InterestingnessScoreLabel => {
+  const interestingScore = roundScore(performance.percentile * 100)
+  const tag = tagForScore(interestingScore)
+  const bucket = SCORE_LABEL_ORDER.indexOf(tag)
+  const withinOne = normalized.reduce((sum, probability, index) => (Math.abs(index - bucket) <= 1 ? sum + probability : sum), 0)
+  return {
+    status: "scored",
+    interestingScore,
+    tag,
+    insight: pickScoreInsight(options.booleanScores, options.numericScores),
+    labelText: `${interestingScore} · ${tag}`,
+    confidence: roundMetric(normalized[bucket] ?? 0),
+    stability: calibratedStability(withinOne, options.metadataVector),
+    odds: { top: roundMetric(normalized[4] ?? 0), bottom: roundMetric(normalized[0] ?? 0) },
+    engagementMultiple: performance.engagementMultiple,
+    reachMultiple: performance.reachMultiple,
+  }
+}
+
 export const mapProbabilitiesToInterestingness = (
   probabilities: ScoreProbabilities,
-  options: { readonly booleanScores?: BooleanScores; readonly numericScores?: NumericScores; readonly metadataVector?: readonly number[] } = {},
+  options: {
+    readonly booleanScores?: BooleanScores
+    readonly numericScores?: NumericScores
+    readonly metadataVector?: readonly number[]
+    readonly performance?: PerformancePrediction | null
+  } = {},
 ): InterestingnessScoreLabel => {
   const classProbabilities = CLASS_NAMES.map((className) => probabilityForClass(probabilities, className))
   const total = classProbabilities.reduce((sum, value) => sum + value, 0)
   const normalized = total > 0 ? classProbabilities.map((value) => value / total) : [0, 0, 1, 0, 0]
+  if (options.performance && Number.isFinite(options.performance.percentile)) {
+    return mapPerformanceToInterestingness(normalized, options.performance, options)
+  }
   const weightedClassIndex = normalized.reduce((sum, probability, index) => sum + probability * index, 0)
   const classScore = weightedClassIndex / (CLASS_NAMES.length - 1)
   const numericVirality = options.numericScores?.virality_score
@@ -315,6 +371,7 @@ export const mapScoreTextResultToLabel = (result: ScoreTextResult): ScoreLabelSu
     booleanScores: result.booleanScores,
     numericScores: result.numericScores,
     metadataVector: result.metadataVector,
+    performance: result.performance,
   })
 }
 
@@ -329,7 +386,6 @@ export const emojiForScoreLabelSummary = (summary: ScoreLabelSummary): string =>
   if (summary.insight?.id === "slop" || summary.insight?.id === "clickbait" || summary.insight?.id === "rage") {
     return SCORE_INSIGHT_EMOJI[summary.insight.id]
   }
-  if (summary.insight?.id === "needs_context") return SCORE_INSIGHT_EMOJI.needs_context
   return scoreEmojiForInterestingScore(summary.interestingScore, summary.insight)
 }
 
@@ -360,10 +416,6 @@ const hasSpecificity = (text: string): boolean => {
   return /\b\d+(?:[.,]\d+)?%?\b/u.test(text) || /\b(today|tomorrow|this week|because|how|why|when|where|who)\b/iu.test(text)
 }
 
-const hasCallToAction = (text: string): boolean => {
-  return /\b(reply|comment|share|follow|try|read|watch|join|tell me|what do you think|should we|click|save)\b/iu.test(text)
-}
-
 export const analyzeComposerHints = (text: string, options: { readonly hasMedia?: boolean } = {}): ComposerHintResult => {
   const trimmed = text.trim()
   const isEmpty = trimmed.length === 0
@@ -390,12 +442,8 @@ export const analyzeComposerHints = (text: string, options: { readonly hasMedia?
       message: "Add a concrete number, timeframe, audience, or reason.",
       active: !isEmpty && !hasSpecificity(trimmed),
     },
-    {
-      id: "cta",
-      label: "Add CTA",
-      message: "Invite replies, shares, or a concrete next action.",
-      active: !isEmpty && !hasCallToAction(trimmed),
-    },
+    // No "Add CTA" hint: on real outcomes, posts with a stronger call to action
+    // do worse (v8 test set), so the hint would push drafts the wrong way.
     {
       id: "media_cue",
       label: "Consider media",

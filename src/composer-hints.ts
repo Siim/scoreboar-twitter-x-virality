@@ -1,13 +1,16 @@
 import type { ComposerFoundEvent, ScheduledTaskCancel, ScanScheduler } from "./dom-detection.js"
 import { createUnavailableScoreTextResult, type ScoreTextResult } from "./inference-runtime.js"
-import { analyzeComposerHints, formatScoreLabelSummary, mapScoreTextResultToLabel, type ComposerHint } from "./score-mapping.js"
+import { analyzeComposerHints, mapScoreTextResultToLabel, type ComposerHint, type ScoreLabelSummary } from "./score-mapping.js"
 import { createScoringGuardrails, createTextScoringCacheKey } from "./scoring-guardrails.js"
+import { applyScoreboarTheme, createMeter, meterForScore, reveal, setMeter } from "./ui-theme.js"
+import { markXAutolinks } from "./x-autolink.js"
 
 export const SCOREBOAR_COMPOSER_PANEL_ATTRIBUTE = "data-scoreboar-composer-panel" as const
 export const SCOREBOAR_COMPOSER_PANEL_STATE_ATTRIBUTE = "data-scoreboar-composer-panel-state" as const
 export const SCOREBOAR_COMPOSER_STYLE_ATTRIBUTE = "data-scoreboar-composer-style" as const
 const SCOREBOAR_COMPOSER_CONTROLS_BOUND_ATTRIBUTE = "data-scoreboar-composer-controls-bound" as const
 const SCOREBOAR_COMPOSER_DRAGGED_ATTRIBUTE = "data-scoreboar-composer-dragged" as const
+const SCOREBOAR_COMPOSER_AUTHOR_UNKNOWN_ATTRIBUTE = "data-scoreboar-composer-author-unknown" as const
 
 export type ComposerPanelState = "empty" | "pending" | "ready" | "unavailable"
 
@@ -18,39 +21,68 @@ export interface ComposerScorer {
 export interface ComposerHintControllerOptions {
   readonly document: Document
   readonly scorer?: ComposerScorer
+  /** The signed-in author's stats when X has already loaded them, so a draft is scored for its own audience. */
+  readonly viewerMetadata?: () => Record<string, unknown> | null
+  /** Clock for the time a draft would go out; tests pin it. */
+  readonly now?: () => Date
   readonly debounceMs?: number
   readonly scheduler?: ScanScheduler
   readonly scoringConcurrency?: number
   readonly scoringCacheSize?: number
 }
 
-interface ComposerScoreRequest {
+export interface ComposerScoreRequest {
   readonly text: string
   readonly metadata: Record<string, unknown>
 }
+
+/**
+ * What a draft is scored with: the inputs its post will have once published.
+ * The text gets the https:// X's linkifier gives bare domains, and every fact
+ * the page shows is sent as a known value (no attachment is "no photo, no
+ * video", a plain draft is "not a quote"), just as the feed reads the post.
+ * It goes out now, or at the time X shows for a scheduled draft.
+ */
+export const composerScoreRequest = (
+  event: ComposerFoundEvent,
+  viewerMetadata: Record<string, unknown> | null | undefined,
+  now: Date,
+): ComposerScoreRequest => ({
+  text: markXAutolinks(event.text),
+  metadata: {
+    source: "composer",
+    createdAt: event.scheduledAt ?? now.toISOString(),
+    ...(event.hasMedia === undefined ? {} : { hasMedia: event.hasMedia }),
+    ...(event.hasPhoto === undefined || event.hasPhoto === null ? {} : { hasPhoto: event.hasPhoto }),
+    ...(event.hasVideo === undefined || event.hasVideo === null ? {} : { hasVideo: event.hasVideo }),
+    ...(event.isQuote === undefined ? {} : { isQuote: event.isQuote }),
+    ...(event.hasCard === undefined ? {} : { hasCard: event.hasCard }),
+    ...(viewerMetadata ?? {}),
+  },
+})
 
 const DEFAULT_COMPOSER_DEBOUNCE_MS = 450
 
 const COMPOSER_PANEL_CSS = `
 .scoreboar-composer-panel {
-  --scoreboar-composer-ink: rgb(83 100 113);
-  --scoreboar-composer-ink-strong: rgb(15 20 25);
-  --scoreboar-composer-accent: rgb(29 155 240);
   align-items: center;
-  background: rgb(255 255 255 / 0.94) !important;
-  border: 1px solid rgb(207 217 222 / 0.72) !important;
   border-radius: 999rem;
-  box-shadow: 0 0.375rem 1.25rem rgb(15 20 25 / 0.16) !important;
-  color: var(--scoreboar-composer-ink);
+  box-sizing: border-box;
+  color: var(--sb-muted);
   display: flex;
-  flex-wrap: wrap;
-  font: 500 0.8125rem/1.25 TwitterChirp, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  gap: 0.35rem;
+  font-size: 0.8125rem;
+  line-height: 1.25;
+  gap: 0.5rem;
   margin: 0 !important;
   max-inline-size: min(100%, 30rem);
-  padding: 0.25rem 0.35rem 0.25rem 0.45rem !important;
+  padding: 0.25rem 0.25rem 0.25rem 0.75rem !important;
   position: absolute;
   z-index: 2147483647;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .scoreboar-composer-panel {
+    transition: box-shadow 150ms ease;
+  }
 }
 .scoreboar-composer-panel[data-scoreboar-composer-placement="dialog"] {
   left: var(--scoreboar-composer-left, 5.5rem);
@@ -59,11 +91,8 @@ const COMPOSER_PANEL_CSS = `
   top: var(--scoreboar-composer-top, 2.75rem);
 }
 .scoreboar-composer-panel[data-scoreboar-composer-placement="inline"] {
-  inset-block-start: -2rem;
+  inset-block-start: -2.25rem;
   inset-inline-start: 0;
-}
-.scoreboar-composer-panel[data-scoreboar-composer-placement="dialog"][data-scoreboar-composer-panel-collapsed="true"] .scoreboar-composer-panel__hints {
-  display: none;
 }
 .scoreboar-composer-panel[hidden] {
   display: none;
@@ -74,72 +103,80 @@ const COMPOSER_PANEL_CSS = `
 .scoreboar-composer-panel__score {
   align-items: center;
   display: inline-flex;
-  gap: 0.3rem;
-  min-block-size: 2rem;
-}
-.scoreboar-composer-panel__prefix {
-  align-items: center;
-  background: #050505;
-  border-radius: 0.3125rem;
-  color: #fff;
-  display: inline-flex;
   flex: 0 0 auto;
-  font-size: 0.75rem;
-  font-weight: 900;
-  block-size: 1.125rem;
-  inline-size: 1.125rem;
-  justify-content: center;
-  letter-spacing: -0.04em;
-  line-height: 1;
+  gap: 0.5rem;
+  min-block-size: 1.75rem;
 }
-.scoreboar-composer-panel__hints {
-  display: inline-flex;
-  gap: 0.25rem;
-  list-style: none;
-  margin: 0;
-  padding: 0;
+.scoreboar-composer-panel__score .scoreboar-meter {
+  color: var(--sb-text);
 }
 .scoreboar-composer-panel__value {
-  font-variant-numeric: tabular-nums;
-  white-space: pre;
+  color: var(--sb-text);
+  font-family: var(--sb-caps);
+  font-size: 0.875rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.scoreboar-composer-panel[data-scoreboar-composer-panel-state="unavailable"] .scoreboar-composer-panel__value {
+  color: var(--sb-muted);
+}
+.scoreboar-composer-panel__flag {
+  color: var(--sb-danger);
+  font: 500 0.75rem/1 var(--sb-caps);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.scoreboar-composer-panel__flag:empty {
+  display: none;
+}
+.scoreboar-composer-panel__hints {
+  border-inline-start: 1px solid var(--sb-line);
+  display: inline-flex;
+  list-style: none;
+  margin: 0;
+  min-width: 0;
+  padding: 0 0 0 0.5rem;
 }
 .scoreboar-composer-panel__hint {
-  align-items: center;
-  color: var(--scoreboar-composer-ink-strong);
-  display: inline-flex;
-  gap: 0.25rem;
-  max-inline-size: min(26rem, 52vw);
+  color: var(--sb-text);
+  max-inline-size: min(22rem, 48vw);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.scoreboar-composer-panel__hint::before {
-  color: var(--scoreboar-composer-accent);
-  content: "💭";
-  font-size: 0.75rem;
-}
 .scoreboar-composer-panel__actions {
   align-items: center;
   display: inline-flex;
-  gap: 0.125rem;
+  flex: 0 0 auto;
 }
 .scoreboar-composer-panel__action {
   align-items: center;
   background: transparent;
   border: 0;
   border-radius: 999rem;
-  color: var(--scoreboar-composer-ink);
+  color: var(--sb-muted);
   cursor: pointer;
   display: inline-flex;
   font: inherit;
-  block-size: 1.25rem;
-  inline-size: 1.25rem;
+  font-size: 0.9375rem;
+  block-size: 1.75rem;
+  inline-size: 1.75rem;
   justify-content: center;
   padding: 0;
   pointer-events: auto;
+  transition: background-color 150ms ease, color 150ms ease;
+}
+.scoreboar-composer-panel__action:hover {
+  background: var(--sb-pill-off);
+  color: var(--sb-text);
+}
+.scoreboar-composer-panel__action:focus-visible {
+  outline: 2px solid var(--sb-focus);
+  outline-offset: 1px;
 }
 .scoreboar-composer-panel__drag {
-  color: var(--scoreboar-composer-ink);
   cursor: grab;
   touch-action: none;
   user-select: none;
@@ -147,27 +184,6 @@ const COMPOSER_PANEL_CSS = `
 }
 .scoreboar-composer-panel__drag:active {
   cursor: grabbing;
-}
-.scoreboar-composer-panel__action:hover {
-  background: rgb(29 155 240 / 0.12);
-  color: rgb(29 155 240);
-}
-.scoreboar-composer-panel[data-scoreboar-composer-panel-state="pending"] {
-  --scoreboar-composer-accent: rgb(100 116 139);
-}
-.scoreboar-composer-panel[data-scoreboar-composer-panel-state="ready"] {
-  --scoreboar-composer-accent: rgb(5 150 105);
-}
-.scoreboar-composer-panel[data-scoreboar-composer-panel-state="unavailable"] {
-  --scoreboar-composer-accent: rgb(83 100 113);
-}
-@media (prefers-color-scheme: dark) {
-  .scoreboar-composer-panel {
-    --scoreboar-composer-ink: rgb(113 118 123);
-    --scoreboar-composer-ink-strong: rgb(231 233 234);
-    background: rgb(0 0 0 / 0.86) !important;
-    border-color: rgb(47 51 54 / 0.9) !important;
-  }
 }
 @media (max-width: 560px) {
   .scoreboar-composer-panel[data-scoreboar-composer-placement="dialog"] {
@@ -187,6 +203,7 @@ const defaultComposerScheduler: ScanScheduler = (callback, delayMs) => {
 }
 
 const ensureComposerStyles = (document: Document) => {
+  applyScoreboarTheme(document)
   if (document.querySelector(`style[${SCOREBOAR_COMPOSER_STYLE_ATTRIBUTE}="true"]`)) {
     return
   }
@@ -205,7 +222,7 @@ const fallbackComposerResult = (text: string): ScoreTextResult => createUnavaila
 
 const createPanelElement = (document: Document): HTMLElement => {
   const panel = document.createElement("aside")
-  panel.className = "scoreboar-composer-panel"
+  panel.className = "scoreboar-composer-panel sb-slab"
   panel.setAttribute(SCOREBOAR_COMPOSER_PANEL_ATTRIBUTE, "true")
   panel.setAttribute("role", "status")
   panel.setAttribute("aria-live", "polite")
@@ -213,14 +230,11 @@ const createPanelElement = (document: Document): HTMLElement => {
   const score = document.createElement("div")
   score.className = "scoreboar-composer-panel__score"
 
-  const prefix = document.createElement("span")
-  prefix.className = "scoreboar-composer-panel__prefix"
-  prefix.setAttribute("aria-hidden", "true")
-  prefix.textContent = "S"
-
   const value = document.createElement("span")
   value.className = "scoreboar-composer-panel__value"
-  score.append(prefix, value)
+  const flag = document.createElement("span")
+  flag.className = "scoreboar-composer-panel__flag"
+  score.append(createMeter(document), value, flag)
 
   const hints = document.createElement("ul")
   hints.className = "scoreboar-composer-panel__hints"
@@ -308,27 +322,50 @@ const positionPanel = (panel: HTMLElement, composerElement: Element) => {
   panel.style.setProperty("--scoreboar-composer-top", `${Math.round(top)}px`)
 }
 
-const composerPanelValueText = (panel: HTMLElement, state: ComposerPanelState, valueText: string): string => {
-  if (panel.getAttribute("data-scoreboar-composer-placement") !== "dialog") {
-    return valueText
-  }
-  if (state === "pending") return "Scoring…"
-  if (state === "unavailable") return "—"
-  return valueText
-    .replace(/[🎯📣✨🫡🍿⚡🤯🔥🚀🙂😎🥱😨😱🥶🤔🫥]\s*/gu, "")
-    .replace(/\s+·\s+rough read/iu, " · rough")
-    .trim()
+/** What the pill says: a calibrated percentile from v8, a bare score from older models. */
+const composerScoreText = (summary: ScoreLabelSummary): string => {
+  if (summary.status !== "scored") return "No score"
+  return summary.odds ? `Beats ${summary.interestingScore}%` : `${summary.interestingScore}%`
 }
 
-const setPanelState = (panel: HTMLElement, state: ComposerPanelState, valueText: string, hints: readonly ComposerHint[]) => {
+const composerFlag = (summary: ScoreLabelSummary): string => {
+  if (summary.status !== "scored") return ""
+  const id = summary.insight?.id
+  return id === "slop" ? "slop" : id === "clickbait" ? "bait" : id === "rage" ? "rage" : ""
+}
+
+const setPanelState = (
+  panel: HTMLElement,
+  state: ComposerPanelState,
+  valueText: string,
+  hints: readonly ComposerHint[],
+  summary?: ScoreLabelSummary,
+) => {
   panel.hidden = state === "empty"
   panel.setAttribute(SCOREBOAR_COMPOSER_PANEL_STATE_ATTRIBUTE, state)
-  const displayText = composerPanelValueText(panel, state, valueText)
-  panel.setAttribute("aria-label", displayText)
+  const label = state === "ready" && summary?.status === "scored" && summary.odds
+    ? `Scoreboar: this draft beats ${summary.interestingScore}% of ordinary posts for an account this size`
+    : `Scoreboar: ${valueText}`
+  panel.setAttribute("aria-label", label)
 
   const value = panel.querySelector<HTMLElement>(".scoreboar-composer-panel__value")
   if (value) {
-    value.textContent = displayText
+    const changed = value.textContent !== valueText
+    value.textContent = valueText
+    // Scoring shimmers like the x11 chat thinking; a new score lands with its reveal.
+    value.classList.toggle("sb-shimmer", state === "pending")
+    if (changed && state === "ready") reveal(value)
+  }
+  const flag = panel.querySelector<HTMLElement>(".scoreboar-composer-panel__flag")
+  if (flag) flag.textContent = summary ? composerFlag(summary) : ""
+  const meter = panel.querySelector(".scoreboar-meter")
+  if (meter) {
+    if (state === "pending") {
+      setMeter(meter, 0, "pending")
+    } else {
+      const { level, tone } = meterForScore(summary?.status === "scored" ? summary.interestingScore : null)
+      setMeter(meter, level, tone)
+    }
   }
 
   const hintList = panel.querySelector<HTMLElement>(".scoreboar-composer-panel__hints")
@@ -391,23 +428,76 @@ export const createComposerHintController = (options: ComposerHintControllerOpti
   const { document, scorer } = options
   const debounceMs = options.debounceMs ?? DEFAULT_COMPOSER_DEBOUNCE_MS
   const scheduler = options.scheduler ?? defaultComposerScheduler
-  const latestComposerKeys = new WeakMap<Element, string>()
-  const pendingComposerTasks = new WeakMap<Element, ScheduledTaskCancel>()
+  const now = options.now ?? (() => new Date())
+  // One token per scoring run: a slower run for an earlier draft, attachment or author never overwrites a newer one.
+  const latestComposerRuns = new WeakMap<Element, object>()
+  const pendingComposerTasks = new Map<Element, ScheduledTaskCancel>()
+  // A stopped controller never touches the page again, even for a run already in flight.
+  let disposed = false
   const dismissedComposerKeys = new WeakMap<Element, string>()
+  // The last draft seen in each open composer, so it can be rescored when the author's stats arrive.
+  const lastComposerEvents = new Map<Element, ComposerFoundEvent>()
   const scoringGuardrails = createScoringGuardrails<ComposerScoreRequest, ScoreTextResult | null | undefined>({
     concurrency: options.scoringConcurrency,
     cacheSize: options.scoringCacheSize,
     keyFor: (request) => createTextScoringCacheKey(request.text, request.metadata),
   })
 
+  const hintsFor = (event: ComposerFoundEvent) => analyzeComposerHints(event.text, { hasMedia: event.hasMedia === true })
+
+  /** Scores the draft as it stands now: viewer stats and the clock are read when the run starts, not when the text last changed. */
+  const scoreDraft = (event: ComposerFoundEvent, panel: HTMLElement, activeHints: readonly ComposerHint[]) => {
+    const run = {}
+    latestComposerRuns.set(event.element, run)
+    void (async () => {
+      const viewer = options.viewerMetadata?.()
+      const scoreRequest = composerScoreRequest(event, viewer, now())
+      const result = await (scorer
+        ? scoringGuardrails.score(scoreRequest, (request) => scorer.scoreComposer(request.text, request.metadata))
+        : Promise.resolve(null)) ?? fallbackComposerResult(event.text)
+      if (disposed || latestComposerRuns.get(event.element) !== run) {
+        return
+      }
+
+      const summary = mapScoreTextResultToLabel(result)
+      setPanelState(panel, summary.status === "scored" ? "ready" : "unavailable", composerScoreText(summary), activeHints, summary)
+      // The published post is scored with its author's stats; say so when this draft could not be.
+      const authorUnknown = options.viewerMetadata !== undefined && !viewer
+      panel.toggleAttribute(SCOREBOAR_COMPOSER_AUTHOR_UNKNOWN_ATTRIBUTE, authorUnknown)
+      if (authorUnknown) {
+        panel.setAttribute("title", "Scored without your account's stats, which X has not loaded yet. The score may change once you post.")
+      } else {
+        panel.removeAttribute("title")
+      }
+    })().catch(() => {
+      if (disposed || latestComposerRuns.get(event.element) !== run) {
+        return
+      }
+      const result = fallbackComposerResult(event.text)
+      const summary = mapScoreTextResultToLabel(result)
+      setPanelState(panel, "unavailable", composerScoreText(summary), activeHints, summary)
+    })
+  }
+
   const renderComposerHints = (event: ComposerFoundEvent): void => {
+    if (disposed) return
     ensureComposerStyles(document)
-    latestComposerKeys.set(event.element, event.key)
+    for (const element of lastComposerEvents.keys()) {
+      if (!element.isConnected) lastComposerEvents.delete(element)
+    }
+    for (const [element, cancel] of pendingComposerTasks) {
+      if (element.isConnected) continue
+      cancel()
+      pendingComposerTasks.delete(element)
+    }
+    lastComposerEvents.set(event.element, event)
+    // Anything still in flight is for an older state of this draft.
+    latestComposerRuns.set(event.element, {})
 
     const panel = findOrCreatePanel(event.element, document)
     positionPanel(panel, event.element)
     bindPanelControls(panel, event.element, event.key, dismissedComposerKeys)
-    const hintResult = analyzeComposerHints(event.text)
+    const hintResult = hintsFor(event)
     pendingComposerTasks.get(event.element)?.()
     pendingComposerTasks.delete(event.element)
 
@@ -421,37 +511,11 @@ export const createComposerHintController = (options: ComposerHintControllerOpti
       return
     }
 
-    setPanelState(panel, "pending", "Scoring…", hintResult.activeHints)
+    setPanelState(panel, "pending", "Scoring", hintResult.activeHints)
 
     const run = () => {
       pendingComposerTasks.delete(event.element)
-      void (async () => {
-        const scoreRequest = {
-          text: event.text,
-          metadata: {
-            source: "composer",
-            cacheKey: event.key,
-            createdAtHour: event.createdAtHour,
-            createdAtDay: event.createdAtDay,
-          },
-        }
-        const result = await (scorer
-          ? scoringGuardrails.score(scoreRequest, (request) => scorer.scoreComposer(request.text, request.metadata))
-          : Promise.resolve(null)) ?? fallbackComposerResult(event.text)
-        if (latestComposerKeys.get(event.element) !== event.key) {
-          return
-        }
-
-        const summary = mapScoreTextResultToLabel(result)
-        setPanelState(panel, summary.status === "scored" ? "ready" : "unavailable", formatScoreLabelSummary(summary), hintResult.activeHints)
-      })().catch(() => {
-        if (latestComposerKeys.get(event.element) !== event.key) {
-          return
-        }
-        const result = fallbackComposerResult(event.text)
-        const summary = mapScoreTextResultToLabel(result)
-        setPanelState(panel, "unavailable", formatScoreLabelSummary(summary), hintResult.activeHints)
-      })
+      scoreDraft(event, panel, hintResult.activeHints)
     }
 
     const cancel = scheduler(run, debounceMs)
@@ -462,5 +526,34 @@ export const createComposerHintController = (options: ComposerHintControllerOpti
     }
   }
 
-  return { renderComposerHints }
+  /**
+   * Rescore every open draft with what is known now, such as the signed-in
+   * author's stats arriving after the last keystroke. The current number stays
+   * on screen until the new one lands; an unchanged input is a cache hit.
+   */
+  const refresh = (): void => {
+    if (disposed) return
+    for (const [element, event] of lastComposerEvents) {
+      if (!element.isConnected) {
+        lastComposerEvents.delete(element)
+        continue
+      }
+      // A debounced run is about to read the fresh state anyway.
+      if (pendingComposerTasks.has(element)) continue
+      if (dismissedComposerKeys.get(element) === event.key) continue
+      const hintResult = hintsFor(event)
+      if (hintResult.status === "empty") continue
+      scoreDraft(event, findOrCreatePanel(element, document), hintResult.activeHints)
+    }
+  }
+
+  /** Stop for good: forget every draft, cancel waiting runs, and drop results still in flight. */
+  const dispose = (): void => {
+    disposed = true
+    for (const cancel of pendingComposerTasks.values()) cancel()
+    pendingComposerTasks.clear()
+    lastComposerEvents.clear()
+  }
+
+  return { renderComposerHints, refresh, dispose }
 }

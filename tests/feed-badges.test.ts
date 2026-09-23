@@ -9,6 +9,7 @@ import {
   createFeedBadgeController,
   createScoreboarDomDetector,
   createUnavailableScoreTextResult,
+  describeTweetRoot,
 } from "../src/index"
 import type { ScoreTextResult } from "../src/inference-runtime"
 
@@ -26,12 +27,14 @@ const scoredResult = (text: string, highProbability: number): ScoreTextResult =>
   label: "scored",
   confidence: highProbability,
   probabilities: { high: highProbability, medium: 1 - highProbability },
+  performance: { percentile: 0.75, engagementMultiple: 1.8, reachMultiple: 2.4 },
   numericScores: { hook_quality: 0.91 },
   booleanScores: {},
   message: "deterministic badge fixture score",
   model: {
     provider: "local-onnx",
-    path: "extension/assets/model/v5-full.onnx",
+    path: "extension/assets/model/scoreboar-v8.onnx",
+    version: "v8",
     available: true,
   },
   metadataVector: [text.length],
@@ -67,14 +70,13 @@ describe("feed badge UI", () => {
       "scored",
       "scored",
     ])
-    expect(badges.map(badgeValueText)).toEqual([
-      "🎯  75%",
-      "🎯  75%",
-      "🎯  75%",
-    ])
+    expect(badges.map(badgeValueText)).toEqual(["75", "75", "75"])
+    expect(badges.map((badge) => badge.querySelector(".scoreboar-meter")?.getAttribute("data-level"))).toEqual(["4", "4", "4"])
     expect(badges[0]?.querySelector("img.scoreboar-boar")).toBeNull()
     const firstDetails = badges[0] ? detailsForBadge(badges[0]) : null
-    expect(firstDetails?.textContent).toContain("Signals: hook 91%")
+    expect(firstDetails?.textContent).toContain("Beats 75%")
+    expect(firstDetails?.textContent).toContain("About 1.8× the usual engagement, 2.4× the usual views")
+    expect(firstDetails?.textContent).toContain("SignalsOpening line9.1/10")
     expect(firstDetails?.textContent).not.toContain("Author stats:")
     expect(firstDetails?.textContent).not.toContain("Media:")
     expect([...dom.window.document.querySelectorAll(X_SELECTORS.tweetText)].map((node) => node.textContent)).toEqual(initialTweetTexts)
@@ -104,7 +106,8 @@ describe("feed badge UI", () => {
       "pending",
       "pending",
     ])
-    expect(badges.every((badge) => badgeValueText(badge) === "…")).toBe(true)
+    expect(badges.every((badge) => badgeValueText(badge) === "")).toBe(true)
+    expect(badges.every((badge) => badge.querySelector(".scoreboar-meter")?.getAttribute("data-tone") === "pending")).toBe(true)
   })
 
   it("falls back to unavailable badges when ONNX scoring is unavailable", async () => {
@@ -137,7 +140,8 @@ describe("feed badge UI", () => {
       "unavailable",
       "unavailable",
     ])
-    expect(badges.every((badge) => badgeValueText(badge) === "—")).toBe(true)
+    expect(badges.every((badge) => badgeValueText(badge) === "")).toBe(true)
+    expect(badges.every((badge) => badge.querySelector(".scoreboar-meter")?.getAttribute("data-tone") === "off")).toBe(true)
   })
 
   it("shows red-flag warning chips and extra model stats for clickbait or slop", async () => {
@@ -154,6 +158,7 @@ describe("feed badge UI", () => {
           ...scoredResult(text, 0.82),
           confidence: null,
           probabilities: { high: 0.82, medium: 0.12, low: 0.06 },
+          performance: { percentile: 0.88, engagementMultiple: 2.1, reachMultiple: 2.6 },
           numericScores: {
             hook_quality: 0.93,
             virality_score: 0.88,
@@ -193,19 +198,16 @@ describe("feed badge UI", () => {
 
     const badge = dom.window.document.querySelector<HTMLElement>(badgeSelector)
     const details = badge ? detailsForBadge(badge) : null
-    expect(badge ? badgeValueText(badge) : null).toBe("🎣  88%")
-    expect(details?.textContent).toContain("🎣  88%")
-    expect(details?.textContent).toContain("Reliability: solid estimate")
-    expect(details?.textContent).toContain("Style: clickbait")
-    expect(details?.textContent).not.toContain("certainty high")
-    expect(details?.textContent).not.toContain("features 4")
-    expect(details?.textContent).toContain("Likely range: high 82%")
-    expect(details?.textContent).not.toContain("Other buckets:")
-    expect(details?.textContent).toContain("Red flags: 🚩 top: 🎣 clickbait🤖 slop 74%🎣 bait 91%🧩 needs context 63%")
-    expect(details?.querySelectorAll('[data-scoreboar-chip-tone="danger"]')).toHaveLength(3)
+    expect(badge ? badgeValueText(badge) : null).toBe("88")
+    expect(badge?.querySelector(".scoreboar-feed-badge__flag")?.textContent).toBe("bait")
+    expect(details?.textContent).toContain("Beats 88%")
+    expect(details?.textContent).toContain("Top fifth 0% · Bottom fifth 0%")
+    expect(details?.textContent).toContain("Red flagsslop 74%bait 91%")
+    expect(details?.textContent).not.toContain("needs context")
+    expect(details?.querySelectorAll('[data-scoreboar-chip-tone="danger"]')).toHaveLength(2)
   })
 
-  it("describes close bucket odds as mixed instead of overconfident raw classes", async () => {
+  it("shows an older model's single most likely fifth, never a merged range", async () => {
     const dom = new JSDOM(`
       <article data-testid="tweet">
         <div data-testid="tweetText">Measured update with a few possible reads</div>
@@ -219,6 +221,7 @@ describe("feed badge UI", () => {
           ...scoredResult(text, 0.27),
           confidence: null,
           probabilities: { medium: 0.27, high: 0.24, very_high: 0.23, low: 0.16, very_low: 0.1 },
+          performance: null,
           numericScores: { hook_quality: 0.55, shareability_score: 0.64, conversation_potential: 0.65, authenticity_score: 0.81 },
           booleanScores: {},
           metadataVector: Array.from({ length: 12 }, (_, index) => index),
@@ -247,16 +250,12 @@ describe("feed badge UI", () => {
 
     const badge = dom.window.document.querySelector<HTMLElement>(badgeSelector)
     const details = badge ? detailsForBadge(badge) : null
-    expect(details?.textContent).toContain("Reliability: rough estimate")
-    expect(details?.textContent).not.toContain("mixed model odds")
-    expect(details?.textContent).not.toContain("certainty low")
-    expect(details?.textContent).not.toContain("features 12")
-    expect(details?.textContent).toContain("Likely range: medium–high · 51% range")
-    expect(details?.textContent).toContain("Red flags: no strong flags")
-    expect(details?.textContent).not.toContain("Other buckets:")
+    expect(details?.textContent).toContain("Most likely medium 27%")
+    expect(details?.textContent).toContain("Red flagsnone")
+    expect(details?.textContent).not.toContain("range")
   })
 
-  it("combines adjacent top buckets when the leading class is not strong", async () => {
+  it("states calibrated odds plainly for a borderline post", async () => {
     const dom = new JSDOM(`
       <article data-testid="tweet">
         <div data-testid="tweetText">Borderline high-ish update</div>
@@ -269,6 +268,7 @@ describe("feed badge UI", () => {
         scoreTweet: async (text) => ({
           ...scoredResult(text, 0.41),
           probabilities: { high: 0.41, medium: 0.33, very_high: 0.16, low: 0.1 },
+          performance: { percentile: 0.58, engagementMultiple: 1.2, reachMultiple: 1.1 },
           numericScores: { virality_score: 0.58, hook_quality: 0.6, shareability_score: 0.57 },
           booleanScores: { has_clear_takeaway: 0.66 },
           metadataVector: Array.from({ length: 12 }, (_, index) => index),
@@ -297,10 +297,11 @@ describe("feed badge UI", () => {
 
     const badge = dom.window.document.querySelector<HTMLElement>(badgeSelector)
     const details = badge ? detailsForBadge(badge) : null
-    expect(badge ? badgeValueText(badge) : null).toBe("🤔  58%")
-    expect(details?.textContent).toContain("🤔  58%")
-    expect(details?.textContent).toContain("Style: rough read")
-    expect(details?.textContent).toContain("Likely range: medium–high · 74% range")
+    expect(badge ? badgeValueText(badge) : null).toBe("58")
+    expect(details?.textContent).toContain("Beats 58%")
+    expect(details?.textContent).toContain("Top fifth 16% · Bottom fifth 0%")
+    expect(details?.textContent).not.toContain("–")
+    expect(details?.querySelectorAll('.scoreboar-feed-badge__scale-step[data-on="true"]')).toHaveLength(3)
   })
 
   it("places the badge before a native Grok/top-tools target when present", async () => {
@@ -426,7 +427,7 @@ describe("feed badge UI", () => {
     const details = badge ? detailsForBadge(badge) : null
     expect(details?.parentElement).toBe(dom.window.document.body)
     expect(details?.getAttribute("data-scoreboar-feed-details-open")).toBe("true")
-    expect(details?.textContent).toContain("Likely range:")
+    expect(details?.textContent).toContain("Top fifth")
     expect(details?.textContent).not.toContain("Author stats:")
     expect(details?.getAttribute("style")).toContain("--scoreboar-popover-top")
     expect(details?.getAttribute("style")).toContain("--scoreboar-popover-arrow-left")
@@ -465,8 +466,8 @@ describe("feed badge UI", () => {
 
     const badge = dom.window.document.querySelector<HTMLElement>(badgeSelector)
     expect(seenMetadata[0]?.hasMedia).toBe(true)
-    expect(seenMetadata[0]?.createdAtHour).toBe(createdAtDate.getHours())
-    expect(seenMetadata[0]?.createdAtDay).toBe(createdAtDate.getDay())
+    // v2 contract: the exact post time, read in UTC by the model.
+    expect(seenMetadata[0]?.createdAt).toBe(createdAtDate.toISOString())
     expect(seenMetadata[0]?.createdAtSource).toBe("tweet-time")
     expect(badge ? detailsForBadge(badge)?.textContent : null).not.toContain("Media:")
   })
@@ -513,5 +514,50 @@ describe("feed badge UI", () => {
     const details = badge ? detailsForBadge(badge) : null
     expect(details?.textContent).not.toContain("Author stats:")
     expect(details?.textContent).not.toContain("@nikitaboar:")
+  })
+})
+
+describe("a long post the timeline cut short", () => {
+  it("is not scored on its preview; the full text from X's response is", async () => {
+    const dom = new JSDOM(`<article data-testid="tweet"><div data-testid="tweetText">Start of a long post</div><button data-testid="tweet-text-show-more-link">Show more</button></article>`)
+    const root = dom.window.document.querySelector("article")!
+    const timers: Array<() => void> = []
+    const scoredTexts: string[] = []
+    const controller = createFeedBadgeController({
+      document: dom.window.document,
+      scheduler: (callback) => {
+        timers.push(callback)
+        return () => undefined
+      },
+      scorer: {
+        scoreTweet: async (text) => {
+          scoredTexts.push(text)
+          return scoredResult(text, 1)
+        },
+      },
+    })
+    const event = {
+      ...describeTweetRoot(root),
+      previousKey: null,
+      changed: false,
+    }
+    expect(event.textTruncated).toBe(true)
+
+    await controller.renderTweetBadge(event)
+    const badge = dom.window.document.querySelector<HTMLElement>(badgeSelector)!
+    expect(scoredTexts).toEqual([])
+    expect(badge.getAttribute(SCOREBOAR_BADGE_STATE_ATTRIBUTE)).toBe("pending")
+
+    // X's response arrives with the whole note before the wait is over.
+    await controller.renderTweetBadge({ ...event, text: "Start of a long post that goes on and on", textTruncated: false })
+    timers.forEach((timer) => timer())
+    expect(scoredTexts).toEqual(["Start of a long post that goes on and on"])
+    expect(badge.getAttribute(SCOREBOAR_BADGE_STATE_ATTRIBUTE)).toBe("scored")
+
+    // Without it, the badge gives up rather than score a different, shorter post.
+    await controller.renderTweetBadge(event)
+    timers.at(-1)?.()
+    expect(badge.getAttribute(SCOREBOAR_BADGE_STATE_ATTRIBUTE)).toBe("unavailable")
+    expect(scoredTexts).toHaveLength(1)
   })
 })

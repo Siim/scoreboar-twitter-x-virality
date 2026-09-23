@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import type { ScoreTextResult } from "../src/inference-runtime"
+import { SCOREBOAR_LOCAL_ONNX_PATH, SCOREBOAR_MODEL_VERSION, type ScoreTextResult } from "../src/inference-runtime"
 import { emojiForScoreLabelSummary, formatScoreLabelSummary, mapProbabilitiesToInterestingness, mapScoreTextResultToLabel, pickScoreInsight } from "../src/score-mapping"
 
 const scoredResult = (probabilities: ScoreTextResult["probabilities"]): ScoreTextResult => ({
@@ -11,7 +11,7 @@ const scoredResult = (probabilities: ScoreTextResult["probabilities"]): ScoreTex
   message: "scored fixture",
   model: {
     provider: "local-onnx",
-    path: "extension/assets/model/v5-full.onnx",
+    path: "extension/assets/model/scoreboar-v8.onnx",
     available: true,
   },
   metadataVector: [],
@@ -35,7 +35,7 @@ describe("score-mapping", () => {
     })
   })
 
-  it("does not repeat the same insight emoji in compact score summaries", () => {
+  it("never raises needs context as the insight: posts it flags do better", () => {
     const summary = mapScoreTextResultToLabel({
       status: "scored",
       label: "scored",
@@ -48,7 +48,8 @@ describe("score-mapping", () => {
       metadataVector: [1, 2, 3],
     })
 
-    expect(formatScoreLabelSummary(summary)).toBe("🧩  72% · needs context")
+    expect(summary.insight?.id).not.toBe("needs_context")
+    expect(formatScoreLabelSummary(summary)).not.toContain("needs context")
   })
 
   it("normalizes mixed model probabilities into a deterministic weighted score", () => {
@@ -118,7 +119,7 @@ describe("score-mapping", () => {
       message: "No model fixture",
       model: {
         provider: "local-onnx",
-        path: "extension/assets/model/v5-full.onnx",
+        path: "extension/assets/model/scoreboar-v8.onnx",
         available: false,
       },
       metadataVector: [],
@@ -188,5 +189,33 @@ describe("score-mapping", () => {
       { high: 1 },
       { numericScores: { authenticity_score: 0.91 } },
     ))).toBe("🫡  75% · auth")
+  })
+})
+
+describe("v8 calibrated performance", () => {
+  const v8Result = {
+    status: "scored" as const,
+    label: "scored" as const,
+    confidence: 0.4,
+    probabilities: { very_low: 0.04, low: 0.08, medium: 0.18, high: 0.3, very_high: 0.4 },
+    performance: { percentile: 0.873, engagementMultiple: 2.4, reachMultiple: 3.1 },
+    numericScores: { virality_score: 0.1 },
+    booleanScores: {},
+    message: "",
+    model: { provider: "local-onnx" as const, path: SCOREBOAR_LOCAL_ONNX_PATH, version: SCOREBOAR_MODEL_VERSION, available: true },
+    metadataVector: [],
+  }
+
+  it("shows the calibrated percentile, not the text-only virality score", () => {
+    const summary = mapScoreTextResultToLabel(v8Result)
+    expect(summary.status).toBe("scored")
+    if (summary.status !== "scored") return
+    expect(summary.interestingScore).toBe(87)
+    expect(summary.tag).toBe("Very High")
+    expect(summary.odds).toEqual({ top: 0.4, bottom: 0.04 })
+    expect(summary.engagementMultiple).toBe(2.4)
+    // Very High and its neighbour High: 0.7 of the mass.
+    expect(summary.stability.score).toBe(70)
+    expect(summary.stability.tier).toBe("solid")
   })
 })

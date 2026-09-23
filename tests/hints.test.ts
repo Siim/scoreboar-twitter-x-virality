@@ -7,7 +7,7 @@ describe("composer hints", () => {
 
     expect(result.status).toBe("empty")
     expect(result.activeHints).toEqual([])
-    expect(result.allHints.map((hint) => hint.id)).toEqual(["hook_clarity", "length", "specificity", "cta", "media_cue"])
+    expect(result.allHints.map((hint) => hint.id)).toEqual(["hook_clarity", "length", "specificity", "media_cue"])
     expect(result.allHints.every((hint) => hint.active === false)).toBe(true)
   })
 
@@ -15,7 +15,7 @@ describe("composer hints", () => {
     const result = analyzeComposerHints("nice update")
 
     expect(result.status).toBe("ready")
-    expect(result.activeHints.map((hint) => hint.id)).toEqual(["hook_clarity", "length", "specificity", "cta"])
+    expect(result.activeHints.map((hint) => hint.id)).toEqual(["hook_clarity", "length", "specificity"])
   })
 
   it("activates media cue only when visual language lacks attached media", () => {

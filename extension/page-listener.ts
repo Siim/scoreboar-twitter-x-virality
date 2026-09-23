@@ -1,19 +1,30 @@
-import { extractXAuthorStatsFromGraphql } from "../src/x-author-metadata.js"
+import {
+  extractXAuthorStatsFromGraphql,
+  extractXTweetFactsFromGraphql,
+  extractXViewerFromGraphql,
+  extractXViewerFromInitialState,
+  type XAuthorStats,
+} from "../src/x-author-metadata.js"
 
 type ScoreboarPageMessage = {
-  readonly type: "scoreboar.authorMetadataBatch"
+  readonly type: "scoreboar.authorMetadataBatch" | "scoreboar.tweetFactsBatch" | "scoreboar.viewer"
   readonly payload: unknown
 }
+
+// Enough for a long scrolling session; the oldest posts are long off screen.
+const MAX_CACHED_TWEET_FACTS = 4000
 
 type ScoreboarRequestMessage = {
   readonly type?: unknown
 }
 
 (() => {
-  const globalScope = globalThis as typeof globalThis & { __scoreboarAuthorListenerInstalled?: boolean }
+  const globalScope = globalThis as typeof globalThis & { __scoreboarAuthorListenerInstalled?: boolean, __INITIAL_STATE__?: unknown }
   if (globalScope.__scoreboarAuthorListenerInstalled) return
   globalScope.__scoreboarAuthorListenerInstalled = true
   const statsByHandle = new Map<string, unknown>()
+  const factsByTweetId = new Map<string, unknown>()
+  let viewerHandle: string | null = null
 
   const debug = (message: string, details?: unknown) => {
     globalScope.console.info(`[Scoreboar author-listener] ${message}`, details ?? "")
@@ -41,9 +52,79 @@ type ScoreboarRequestMessage = {
     globalScope.postMessage(message, "*")
   }
 
+  const postTweetFacts = (payload: unknown) => {
+    const facts = extractXTweetFactsFromGraphql(payload)
+    if (facts.length === 0) return
+    for (const fact of facts) {
+      factsByTweetId.delete(fact.tweetId)
+      factsByTweetId.set(fact.tweetId, fact)
+    }
+    while (factsByTweetId.size > MAX_CACHED_TWEET_FACTS) {
+      const oldest = factsByTweetId.keys().next().value
+      if (oldest === undefined) break
+      factsByTweetId.delete(oldest)
+    }
+    const message: ScoreboarPageMessage = { type: "scoreboar.tweetFactsBatch", payload: facts }
+    globalScope.postMessage(message, "*")
+  }
+
+  // The signed-in account, sent with its newest stats: later captures (Viewer, CreateTweet,
+  // the profile) overwrite the same entry, so the composer and the feed read the same numbers.
+  const postViewer = () => {
+    if (!viewerHandle) return
+    const message: ScoreboarPageMessage = { type: "scoreboar.viewer", payload: statsByHandle.get(viewerHandle.toLowerCase()) }
+    globalScope.postMessage(message, "*")
+  }
+
+  const setViewer = (stats: XAuthorStats, source: string) => {
+    const key = stats.authorHandle.toLowerCase()
+    // A loaded response is newer than the page bootstrap, so the bootstrap never overwrites one.
+    if (source !== "initial-state" || !statsByHandle.has(key)) statsByHandle.set(key, stats)
+    viewerHandle = stats.authorHandle
+    debug("identified signed-in account", { handle: viewerHandle, source })
+    postViewer()
+  }
+
+  // X's page bootstrap names the signed-in account (session.user_id) and holds its
+  // user object. Catch it as X's inline script assigns it, before any composer opens.
+  const seedViewerFromInitialState = (state: unknown) => {
+    try {
+      const stats = extractXViewerFromInitialState(state)
+      if (stats) setViewer(stats, "initial-state")
+    } catch {
+      // Never let reading X's bootstrap break X.
+    }
+  }
+  try {
+    if (globalScope.__INITIAL_STATE__ !== undefined) {
+      seedViewerFromInitialState(globalScope.__INITIAL_STATE__)
+    } else {
+      let initialState: unknown
+      Object.defineProperty(globalScope, "__INITIAL_STATE__", {
+        configurable: true,
+        enumerable: true,
+        get: () => initialState,
+        set: (value: unknown) => {
+          initialState = value
+          seedViewerFromInitialState(value)
+        },
+      })
+    }
+  } catch {
+    // Already defined by the page as something we cannot wrap; DOMContentLoaded below still reads it.
+  }
+  globalScope.document?.addEventListener("DOMContentLoaded", () => {
+    if (!viewerHandle) seedViewerFromInitialState(globalScope.__INITIAL_STATE__)
+  })
+
   globalScope.addEventListener("message", (event: MessageEvent<ScoreboarRequestMessage>) => {
     if (event.data?.type !== "scoreboar.requestAuthorMetadataBatch") return
-    debug("received cache replay request", { cached: statsByHandle.size })
+    debug("received cache replay request", { cached: statsByHandle.size, tweets: factsByTweetId.size })
+    postViewer()
+    if (factsByTweetId.size > 0) {
+      const facts: ScoreboarPageMessage = { type: "scoreboar.tweetFactsBatch", payload: [...factsByTweetId.values()] }
+      globalScope.postMessage(facts, "*")
+    }
     if (statsByHandle.size === 0) return
     const message: ScoreboarPageMessage = {
       type: "scoreboar.authorMetadataBatch",
@@ -54,7 +135,10 @@ type ScoreboarRequestMessage = {
 
   const inspectPayload = (payload: unknown, source: "fetch" | "xhr", url: string) => {
     debug("inspecting X GraphQL response", { source, url: url.replace(/\?.*$/u, "") })
+    postTweetFacts(payload)
     postStats(payload)
+    const viewer = extractXViewerFromGraphql(payload)
+    if (viewer) setViewer(viewer, "graphql")
   }
 
   const inspectResponse = (response: Response) => {

@@ -1,16 +1,23 @@
 import { JSDOM } from "jsdom"
 import { describe, expect, it } from "vitest"
 import {
-  V5_METADATA_FEATURE_ORDER,
   X_COMPOSER_SELECTOR,
   X_SELECTORS,
   X_TWEET_MEDIA_SELECTOR,
   extractComposerText,
-  extractTextFeatures,
+  extractTweetId,
+  extractTweetMediaFacts,
+  extractTweetText,
   extractTweetAuthorMetadata,
-  preprocessMetadata,
+  extractSerializedAuthorMetadata,
+  extractViewerHandle,
+  splitTrailingPostLink,
+  stripReplyMentionPrefix,
   tweetHasMedia,
+  tweetIsQuote,
+  tweetTextTruncated,
 } from "../src/contracts"
+import { describeTweetRoot } from "../src/dom-detection"
 
 const queryRoot = (matches: Record<string, string | null>) => ({
   querySelector: (selector: string) => {
@@ -64,6 +71,9 @@ describe("selectors contract", () => {
       authorFollowing: 321,
       authorTweets: 777,
       authorVerified: true,
+      authorVerifiedType: null,
+      authorCreatedAt: null,
+      authorFavourites: null,
       authorMetadataSource: "same-page-dom",
     })
   })
@@ -79,6 +89,9 @@ describe("selectors contract", () => {
       authorFollowing: null,
       authorTweets: null,
       authorVerified: null,
+      authorVerifiedType: null,
+      authorCreatedAt: null,
+      authorFavourites: null,
       authorMetadataSource: "defaulted",
     })
   })
@@ -102,6 +115,9 @@ describe("selectors contract", () => {
       authorFollowing: 1192,
       authorTweets: 3127,
       authorVerified: true,
+      authorVerifiedType: null,
+      authorCreatedAt: null,
+      authorFavourites: null,
       authorMetadataSource: "same-page-dom",
     })
   })
@@ -126,77 +142,136 @@ describe("selectors contract", () => {
   })
 })
 
-describe("metadata preprocessing contract", () => {
-  it("metadata uses the v5 feature order", () => {
-    expect(V5_METADATA_FEATURE_ORDER).toEqual([
-      "has_media",
-      "created_at_hour_sin",
-      "created_at_hour_cos",
-      "created_at_day_sin",
-      "created_at_day_cos",
-      "log_author_followers",
-      "log_author_following",
-      "log_author_tweets",
-      "author_verified",
-      "hashtag_count",
-      "mention_count",
-      "url_count",
-    ])
+describe("reading posts the way the model was trained", () => {
+  const article = (html: string) => {
+    const dom = new JSDOM(`<article data-testid="tweet">${html}</article>`)
+    return dom.window.document.querySelector("article")!
+  }
+
+  it("keeps emoji, line breaks and one placeholder per link", () => {
+    const root = article(`
+      <div data-testid="tweetText"><span>shipped it </span><img alt="🚀" src="x.svg"><span>
+second line </span><a href="https://t.co/abc"><span>https://</span>github.com/x/y…</a><span> via </span><a href="/boar">@boar</a></div>
+    `)
+    // An unpadded URL-shaped stand-in: the contract's URL rule makes it [link], as it does the t.co in API text.
+    expect(extractTweetText(root)).toBe("shipped it 🚀\nsecond line https://link via @boar")
   })
 
-  it("metadata defaults empty text and absent author values deterministically", () => {
-    const result = preprocessMetadata()
+  it("counts media on the post, not in the quoted post, and not link cards", () => {
+    const own = article(`<div data-testid="tweetPhoto"></div><div data-testid="card.wrapper"></div>`)
+    expect(extractTweetMediaFacts(own)).toEqual({ hasMedia: true, hasPhoto: true, hasVideo: false, hasCard: true })
 
-    expect(result.textFeatures).toEqual({ hashtagCount: 0, mentionCount: 0, urlCount: 0 })
-    expect(result.vector).toHaveLength(V5_METADATA_FEATURE_ORDER.length)
-    expect(result.features).toMatchObject({
-      has_media: 0,
-      created_at_hour_sin: 0,
-      created_at_hour_cos: 1,
-      created_at_day_sin: 0,
-      created_at_day_cos: 1,
-      log_author_followers: 0,
-      log_author_following: 0,
-      log_author_tweets: 0,
-      author_verified: 0,
-      hashtag_count: 0,
-      mention_count: 0,
-      url_count: 0,
-    })
+    const quoted = article(`
+      <div data-testid="User-Name"><a href="/me">me</a></div>
+      <div role="link"><div data-testid="User-Name"><a href="/them">them</a></div><div data-testid="videoPlayer"></div></div>
+    `)
+    expect(extractTweetMediaFacts(quoted)).toEqual({ hasMedia: false, hasPhoto: false, hasVideo: false, hasCard: false })
+    expect(tweetIsQuote(quoted)).toBe(true)
   })
 
-  it("metadata counts hashtags mentions and URLs with clipping transforms", () => {
-    const result = preprocessMetadata({
-      text: "Ship it #AI #build with @ada @boar https://x.example/post www.example.test",
-      hasMedia: true,
-      createdAtHour: 30,
-      createdAtDay: 9,
-      authorFollowers: 100,
-      authorFollowing: -5,
-      authorTweets: 0,
+  it("finds the post id from its own timestamp link", () => {
+    const root = article(`<a href="/boar/status/2101070651281047607"><time datetime="2026-09-18T22:07:33.000Z">Sep 18</time></a>`)
+    expect(extractTweetId(root)).toBe("2101070651281047607")
+  })
+})
+
+describe("the post body as training and the draft read it", () => {
+  const article = (html: string) => new JSDOM(`<article data-testid="tweet">${html}</article>`).window.document.querySelector("article")!
+  const card = (href: string) => `<div data-testid="card.wrapper"><a href="${href}"><img alt="" src="c.jpg"></a><a href="${href}">From example.com</a></div>`
+
+  it("puts back the trailing URL X hides behind the post's link card", () => {
+    expect(describeTweetRoot(article(`<div data-testid="tweetText">I wrote up everything we learned in 6 months</div>${card("https://t.co/abc")}`)).text)
+      .toBe("I wrote up everything we learned in 6 months https://link")
+    // The break before the URL survives when the page kept it.
+    expect(extractTweetText(article(`<div data-testid="tweetText">A list:\n</div>${card("https://t.co/abc")}`))).toBe("A list:\nhttps://link")
+    // A link-only post reads as the draft did: just the link.
+    expect(describeTweetRoot(article(card("https://t.co/abc"))).text).toBe("https://link")
+  })
+
+  it("leaves the text alone when the card's URL is shown, for polls, and for a quoted post's card", () => {
+    const shown = article(`<div data-testid="tweetText">See <a href="https://t.co/abc">example.com/a</a> for more</div>${card("https://t.co/abc")}`)
+    expect(extractTweetText(shown)).toBe("See https://link for more")
+    const poll = article(`<div data-testid="tweetText">Tabs or spaces?</div><div data-testid="card.wrapper"><div data-testid="cardPoll">Tabs</div></div>`)
+    expect(extractTweetText(poll)).toBe("Tabs or spaces?")
+    const quotedCard = article(`<div data-testid="tweetText">This</div><div role="link"><div data-testid="User-Name">them</div>${card("https://t.co/q")}</div>`)
+    expect(extractTweetText(quotedCard)).toBe("This")
+  })
+
+  it("reads a quote with no words of its own as empty, not as the quoted post", () => {
+    const quoteOnly = article(`<div data-testid="User-Name"><a href="/me">me</a></div><div role="link"><div data-testid="User-Name">them</div><div data-testid="tweetText">their words</div></div>`)
+    expect(extractTweetText(quoteOnly)).toBe("")
+  })
+
+  it("flags a long post the timeline cut short", () => {
+    expect(tweetTextTruncated(article(`<div data-testid="tweetText">Start of a long post</div><button data-testid="tweet-text-show-more-link">Show more</button>`))).toBe(true)
+    expect(tweetTextTruncated(article(`<div data-testid="tweetText">Short</div><div role="link"><div data-testid="User-Name">q</div><button data-testid="tweet-text-show-more-link">Show more</button></div>`))).toBe(false)
+  })
+
+  it("counts a video item as video whichever way X nests its player", () => {
+    expect(extractTweetMediaFacts(article(`<div data-testid="videoPlayer"><div data-testid="tweetPhoto"><video></video></div></div>`))).toMatchObject({ hasPhoto: false, hasVideo: true })
+    expect(extractTweetMediaFacts(article(`<div data-testid="tweetPhoto"><div data-testid="videoPlayer"><video></video></div></div>`))).toMatchObject({ hasPhoto: false, hasVideo: true })
+  })
+
+  it("reads the author's stats from the author's chrome, not the post body or a quoted post", () => {
+    const root = article(`
+      <div data-testid="UserAvatar-Container-plainboar"></div>
+      <div data-testid="tweetText">We just hit 10K followers! Thanks @bigaccount</div>
+      <div role="link"><div data-testid="User-Name">Big <svg aria-label="Verified account"></svg></div></div>`)
+    expect(extractTweetAuthorMetadata(root)).toMatchObject({ authorHandle: "plainboar", authorFollowers: null, authorVerified: null })
+  })
+})
+
+describe("the signed-in account", () => {
+  const doc = (html: string) => new JSDOM(`<!doctype html><body>${html}</body>`).window.document
+
+  it("comes from page structure, whatever the display name says", () => {
+    const expanded = `<button data-testid="SideNav_AccountSwitcher_Button"><div data-testid="UserAvatar-Container-janedoe"></div><span>Jane | eng @acme</span><span>@janedoe</span></button>`
+    expect(extractViewerHandle(doc(expanded))).toBe("janedoe")
+    // Collapsed side nav: only the avatar, plus the Profile tab.
+    expect(extractViewerHandle(doc(`<button data-testid="SideNav_AccountSwitcher_Button"><div data-testid="UserAvatar-Container-janedoe"></div></button>`))).toBe("janedoe")
+    expect(extractViewerHandle(doc(`<nav><a data-testid="AppTabBar_Profile_Link" href="/janedoe">Profile</a></nav>`))).toBe("janedoe")
+    // The narrow layout's profile button.
+    expect(extractViewerHandle(doc(`<a data-testid="DashButton_ProfileIcon_Link" href="/janedoe"><div data-testid="UserAvatar-Container-janedoe"></div></a>`))).toBe("janedoe")
+    // Text only: the handle line, not the first "@" in the name.
+    expect(extractViewerHandle(doc(`<button data-testid="SideNav_AccountSwitcher_Button"><span>Siim ceo@acme</span><span>@siimh</span></button>`))).toBe("siimh")
+    expect(extractViewerHandle(doc(`<nav><a data-testid="AppTabBar_Profile_Link" href="/home">Home</a></nav>`))).toBeNull()
+  })
+
+  it("its serialized stats come from its own user object", () => {
+    const state = {
+      settings: { remote: { settings: { screen_name: "Ada_Builds" } } },
+      entities: { users: { entities: {
+        7: { screen_name: "someone", followers_count: 99999, created_at: "Mon Jan 01 00:00:00 +0000 2010", favourites_count: 5 },
+        42: { screen_name: "Ada_Builds", followers_count: 812, friends_count: 301, statuses_count: 4120, favourites_count: 9800, created_at: "Sun Apr 03 23:48:02 +0000 2022", is_blue_verified: true, verified: false, description: "{ braces } in \"quotes\"" },
+      } } },
+    }
+    const document = doc(`<script>window.__INITIAL_STATE__=${JSON.stringify(state)};</script>`)
+    expect(extractSerializedAuthorMetadata(document, "ada_builds")).toEqual({
+      authorFollowers: 812,
+      authorFollowing: 301,
+      authorTweets: 4120,
       authorVerified: true,
+      authorVerifiedType: null,
+      authorCreatedAt: "Sun Apr 03 23:48:02 +0000 2022",
+      authorFavourites: 9800,
     })
+  })
+})
 
-    expect(result.textFeatures).toEqual({ hashtagCount: 2, mentionCount: 2, urlCount: 2 })
-    expect(result.features.has_media).toBe(1)
-    expect(result.features.author_verified).toBe(1)
-    expect(result.features.hashtag_count).toBe(0.1)
-    expect(result.features.mention_count).toBe(0.1)
-    expect(result.features.url_count).toBe(0.1)
-    expect(result.features.created_at_hour_sin).toBeCloseTo(Math.sin((2 * Math.PI * 23) / 24))
-    expect(result.features.created_at_day_cos).toBeCloseTo(Math.cos((2 * Math.PI * 6) / 7))
-    expect(result.features.log_author_followers).toBeCloseTo(Math.log1p(100) / 20)
-    expect(result.features.log_author_following).toBe(0)
+describe("draft text rules X applies when it posts", () => {
+  it("a trailing post link is the quote, not text", () => {
+    expect(splitTrailingPostLink("Look https://x.com/a/status/123?s=20")).toEqual({ text: "Look", quotesPost: true })
+    expect(splitTrailingPostLink("Look\nhttps://twitter.com/a/status/123/photo/1 ")).toEqual({ text: "Look", quotesPost: true })
+    expect(splitTrailingPostLink("Look x.com/a/status/123")).toEqual({ text: "Look", quotesPost: true })
+    expect(splitTrailingPostLink("See https://x.com/a/status/123 first")).toEqual({ text: "See https://x.com/a/status/123 first", quotesPost: false })
+    expect(splitTrailingPostLink("Follow https://x.com/a")).toEqual({ text: "Follow https://x.com/a", quotesPost: false })
+    expect(splitTrailingPostLink("on fox.com/a/status/1")).toEqual({ text: "on fox.com/a/status/1", quotesPost: false })
   })
 
-  it("metadata handles non-English text and emoji without throwing", () => {
-    const text = "Привет мир #новости こんにちは #東京 🚀 @user https://example.com/路径"
-
-    expect(() => extractTextFeatures(text)).not.toThrow()
-    expect(preprocessMetadata({ text }).textFeatures).toEqual({
-      hashtagCount: 2,
-      mentionCount: 1,
-      urlCount: 1,
-    })
+  it("a reply's leading mentions go to Replying to", () => {
+    expect(stripReplyMentionPrefix("@grok @alice is this true?")).toBe("is this true?")
+    expect(stripReplyMentionPrefix("@alice, hi")).toBe("@alice, hi")
+    expect(stripReplyMentionPrefix("hi @alice")).toBe("hi @alice")
+    expect(stripReplyMentionPrefix("@a_very_long_handle_x hi")).toBe("@a_very_long_handle_x hi")
   })
 })

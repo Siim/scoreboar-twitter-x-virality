@@ -1,9 +1,10 @@
 import { preprocessMetadata } from "../src/contracts.js"
 import {
+  BOOLEAN_SCORE_NAMES,
+  NUMERIC_SCORE_NAMES,
   SCOREBOAR_LOCAL_ONNX_PATH,
-  SCOREBOAR_V5_VIRALITY_TEMPERATURE,
-  V5_BOOLEAN_SCORE_NAMES,
-  V5_NUMERIC_SCORE_NAMES,
+  SCOREBOAR_MAX_TOKENS,
+  SCOREBOAR_MODEL_VERSION,
   createScoreTextResponse,
   createUnavailableScoreTextResult,
   isScoreTextOffscreenMessage,
@@ -59,10 +60,11 @@ const getOrt = (): OrtApi | null => {
   return candidate ?? null
 }
 
-const softmax = (values: readonly number[], temperature = 1): readonly number[] => {
-  const scaled = values.map((value) => value / temperature)
-  const max = Math.max(...scaled)
-  const exps = scaled.map((value) => Math.exp(value - max))
+// The exported graph already applies the fitted calibration, so logits are
+// turned into probabilities as they are.
+const softmax = (values: readonly number[]): readonly number[] => {
+  const max = Math.max(...values)
+  const exps = values.map((value) => Math.exp(value - max))
   const total = exps.reduce((sum, value) => sum + value, 0)
   return exps.map((value) => value / total)
 }
@@ -72,7 +74,7 @@ const sigmoid = (value: number): number => 1 / (1 + Math.exp(-value))
 const tensorNumbers = (tensor: OrtTensor<"float32">): readonly number[] => [...tensor.data as Float32Array]
 
 const probabilitiesFromLogits = (logits: readonly number[]): ScoreProbabilities => {
-  const [veryLow, low, medium, high, veryHigh] = softmax(logits, SCOREBOAR_V5_VIRALITY_TEMPERATURE)
+  const [veryLow, low, medium, high, veryHigh] = softmax(logits)
   return { very_low: veryLow, low, medium, high, very_high: veryHigh }
 }
 
@@ -82,13 +84,13 @@ const confidenceFromProbabilities = (probabilities: ScoreProbabilities): number 
 
 const numericScoresFromTensor = (tensor: OrtTensor<"float32">): NumericScores => {
   const values = tensorNumbers(tensor)
-  const entries = V5_NUMERIC_SCORE_NAMES.map((name, index) => [name, values[index] ?? 0] as const)
+  const entries = NUMERIC_SCORE_NAMES.map((name, index) => [name, values[index] ?? 0] as const)
   return Object.fromEntries(entries) as NumericScores
 }
 
 const booleanScoresFromTensor = (tensor: OrtTensor<"float32">): BooleanScores => {
   const values = tensorNumbers(tensor)
-  const entries = V5_BOOLEAN_SCORE_NAMES.map((name, index) => [name, sigmoid(values[index] ?? 0)] as const)
+  const entries = BOOLEAN_SCORE_NAMES.map((name, index) => [name, sigmoid(values[index] ?? 0)] as const)
   return Object.fromEntries(entries) as BooleanScores
 }
 
@@ -98,7 +100,11 @@ const createBrowserOnnxRunner = async (): Promise<LocalModelRunner> => {
     throw new Error("ONNX Runtime Web global is unavailable")
   }
   ort.env.wasm.wasmPaths = getExtensionUrl("extension/assets/runtime/")
-  ort.env.wasm.numThreads = 1
+  // Threads need SharedArrayBuffer, which needs a cross-origin-isolated page
+  // (see cross_origin_*_policy in the manifest). Without it, one thread.
+  const isolated = (globalThis as { crossOriginIsolated?: boolean }).crossOriginIsolated === true
+  const cores = (globalThis as { navigator?: { hardwareConcurrency?: number } }).navigator?.hardwareConcurrency ?? 1
+  ort.env.wasm.numThreads = isolated ? Math.max(1, Math.min(4, Math.floor(cores / 2))) : 1
 
   const tokenizerResponse = await fetch(getExtensionUrl("extension/assets/tokenizer/tokenizer.json"))
   if (!tokenizerResponse.ok) {
@@ -109,35 +115,46 @@ const createBrowserOnnxRunner = async (): Promise<LocalModelRunner> => {
   const session = await ort.InferenceSession.create(getExtensionUrl(SCOREBOAR_LOCAL_ONNX_PATH), { executionProviders: ["wasm"] })
 
   return {
-    score: async (input: ScoreTextInput, metadataVector: readonly number[]): Promise<ScoreTextResult> => {
-      const maxLength = 192
-      const encoded = tokenizer.encode(input.text, maxLength)
+    score: async (input: ScoreTextInput, metadataVector: readonly number[], normalizedText?: string): Promise<ScoreTextResult> => {
+      // Unpadded: the model gives the same answer at any padding, and a
+      // typical post is ~45 tokens, so padding to the cap would triple the work.
+      const encoded = tokenizer.encode(normalizedText ?? input.text, SCOREBOAR_MAX_TOKENS, { pad: false })
+      const length = encoded.inputIds.length
       const feeds = {
-        input_ids: new ort.Tensor("int64", BigInt64Array.from(encoded.inputIds.map(BigInt)), [1, maxLength]),
-        attention_mask: new ort.Tensor("int64", BigInt64Array.from(encoded.attentionMask.map(BigInt)), [1, maxLength]),
+        input_ids: new ort.Tensor("int64", BigInt64Array.from(encoded.inputIds.map(BigInt)), [1, length]),
+        attention_mask: new ort.Tensor("int64", BigInt64Array.from(encoded.attentionMask.map(BigInt)), [1, length]),
         metadata: new ort.Tensor("float32", Float32Array.from(metadataVector), [1, metadataVector.length]),
       }
       const outputs = await session.run(feeds)
+      const performance = outputs.performance
+      const outcomes = outputs.outcomes
       const viralityLogits = outputs.virality_logits
       const numericScores = outputs.numeric_scores
       const booleanLogits = outputs.boolean_logits
-      if (!viralityLogits || !numericScores || !booleanLogits) {
-        throw new Error("ONNX output is missing expected v5 tensors")
+      if (!performance || !outcomes || !viralityLogits || !numericScores || !booleanLogits) {
+        throw new Error(`ONNX output is missing expected Scoreboar ${SCOREBOAR_MODEL_VERSION} tensors`)
       }
 
       const probabilities = probabilitiesFromLogits(tensorNumbers(viralityLogits).slice(0, 5))
+      const [, engagementResidual = 0, reachResidual = 0] = tensorNumbers(outcomes)
 
       return {
         status: "scored",
         label: "scored",
         confidence: confidenceFromProbabilities(probabilities),
         probabilities,
+        performance: {
+          percentile: tensorNumbers(performance)[0] ?? 0.5,
+          engagementMultiple: Math.exp(engagementResidual),
+          reachMultiple: Math.exp(reachResidual),
+        },
         numericScores: numericScoresFromTensor(numericScores),
         booleanScores: booleanScoresFromTensor(booleanLogits),
-        message: "Scored locally with packaged Scoreboar v5 ONNX.",
+        message: `Scored locally with Scoreboar ${SCOREBOAR_MODEL_VERSION}.`,
         model: {
           provider: "local-onnx",
           path: SCOREBOAR_LOCAL_ONNX_PATH,
+          version: SCOREBOAR_MODEL_VERSION,
           available: true,
         },
         metadataVector,
@@ -159,10 +176,10 @@ chromeApi?.runtime?.onMessage?.addListener((message, _sender, sendResponse) => {
   }
 
   void (async () => {
-    const metadataVector = preprocessMetadata({ text: message.payload.text, ...message.payload.metadata }).vector
+    const { vector: metadataVector, normalizedText } = preprocessMetadata({ ...message.payload.metadata, text: message.payload.text })
     try {
       const runner = await getRunner()
-      sendResponse(createScoreTextResponse(await runner.score(message.payload, metadataVector), message.requestId))
+      sendResponse(createScoreTextResponse(await runner.score(message.payload, metadataVector, normalizedText), message.requestId))
     } catch (error: unknown) {
       const detail = error instanceof Error ? error.message : String(error)
       const unavailable = createUnavailableScoreTextResult(

@@ -12,7 +12,7 @@ const scoredResult = (text: string): ScoreTextResult => ({
   message: "queued fixture score",
   model: {
     provider: "local-onnx",
-    path: "extension/assets/model/v5-full.onnx",
+    path: "extension/assets/model/scoreboar-v8.onnx",
     available: true,
   },
   metadataVector: [text.length],

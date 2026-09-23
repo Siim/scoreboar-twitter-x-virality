@@ -1,7 +1,8 @@
-import type { TweetFoundEvent } from "./dom-detection.js"
+import type { ScanScheduler, TweetFoundEvent } from "./dom-detection.js"
 import { type ScoreTextResult, createUnavailableScoreTextResult } from "./inference-runtime.js"
-import { emojiForScoreLabelSummary, type ScoreLabelSummary, formatCompactScoreInsight, formatScoreInsight, mapScoreTextResultToLabel } from "./score-mapping.js"
+import { type ScoreLabelSummary, mapScoreTextResultToLabel } from "./score-mapping.js"
 import { createScoringGuardrails, createTextScoringCacheKey } from "./scoring-guardrails.js"
+import { applyScoreboarTheme, createMeter, meterForScore, reveal, setMeter } from "./ui-theme.js"
 
 export const SCOREBOAR_BADGE_ATTRIBUTE = "data-scoreboar-feed-badge" as const
 export const SCOREBOAR_BADGE_STATE_ATTRIBUTE = "data-scoreboar-feed-badge-state" as const
@@ -18,251 +19,260 @@ export interface FeedBadgeControllerOptions {
   readonly scorer?: FeedBadgeScorer
   readonly scoringConcurrency?: number
   readonly scoringCacheSize?: number
+  /** Timer for giving up on a cut-short post whose full text never arrives; tests pin it. */
+  readonly scheduler?: ScanScheduler
 }
 
-interface FeedBadgeScoreRequest {
+export interface FeedBadgeScoreRequest {
   readonly text: string
   readonly metadata: Record<string, unknown>
 }
 
+// Long enough for X's own response about the post to arrive after it renders.
+const TRUNCATED_TEXT_WAIT_MS = 3_000
+
+/** What a post is scored with: everything the page and X's responses say about it. */
+export const tweetScoreRequest = (event: TweetFoundEvent): FeedBadgeScoreRequest => ({
+  text: event.text,
+  metadata: {
+    tweetId: event.tweetId ?? null,
+    hasMedia: event.hasMedia,
+    hasPhoto: event.mediaFacts?.hasPhoto ?? null,
+    hasVideo: event.mediaFacts?.hasVideo ?? null,
+    hasCard: event.mediaFacts?.hasCard ?? null,
+    isQuote: event.isQuote ?? null,
+    createdAt: event.createdAtMetadata?.createdAt ?? null,
+    createdAtSource: event.createdAtMetadata?.createdAtSource ?? "defaulted",
+    authorHandle: event.authorMetadata.authorHandle,
+    authorFollowers: event.authorMetadata.authorFollowers,
+    authorFollowing: event.authorMetadata.authorFollowing,
+    authorTweets: event.authorMetadata.authorTweets,
+    authorVerified: event.authorMetadata.authorVerified,
+    authorVerifiedType: event.authorMetadata.authorVerifiedType ?? null,
+    authorCreatedAt: event.authorMetadata.authorCreatedAt ?? null,
+    authorFavourites: event.authorMetadata.authorFavourites ?? null,
+    authorMetadataSource: event.authorMetadata.authorMetadataSource,
+    source: "tweet",
+  },
+})
+
+// The meter carries the pending and unavailable states; only a score is text.
 const BADGE_TEXT_BY_STATE: Readonly<Record<FeedBadgeState, string>> = {
-  pending: "…",
+  pending: "",
   scored: "Score ready",
-  unavailable: "—",
+  unavailable: "",
 }
 
 const BADGE_CSS = `
 .scoreboar-feed-badge {
-  --scoreboar-badge-ink: rgb(83 100 113);
-  --scoreboar-badge-ink-strong: rgb(15 20 25);
-  --scoreboar-badge-accent: rgb(29 155 240);
   align-items: center;
-  background: transparent !important;
-  border: 0 !important;
-  border-radius: 0 !important;
-  box-shadow: none !important;
+  border-radius: 0.5rem !important;
   box-sizing: border-box;
-  color: var(--scoreboar-badge-ink);
-  cursor: default;
+  cursor: pointer;
   display: inline-flex;
   flex: 0 0 auto !important;
-  font: 500 0.8125rem/1.25 TwitterChirp, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  gap: 0.3rem;
-  height: 2rem !important;
-  letter-spacing: 0;
-  margin: 0 !important;
-  max-inline-size: 10rem;
+  font: 600 0.75rem/1 var(--sb-mono);
+  gap: 0.375rem;
+  height: 1.5rem !important;
+  margin: 0.25rem 0 !important;
+  max-inline-size: 8rem;
   min-block-size: 0 !important;
   min-inline-size: 0 !important;
-  overflow: hidden;
-  padding: 0 !important;
+  padding: 0 0.5rem !important;
   pointer-events: auto;
   position: relative;
+  vertical-align: middle;
   white-space: nowrap;
-  vertical-align: top;
   width: auto !important;
-}
-.scoreboar-feed-badge:focus-visible {
-  border-radius: 999px !important;
-  outline: 2px solid rgb(29 155 240 / 0.55);
-  outline-offset: 2px;
-}
-.scoreboar-feed-badge[data-scoreboar-feed-badge-open="true"] {
-  overflow: visible;
 }
 .scoreboar-feed-badge[data-scoreboar-feed-badge-placement="top-tools"] {
   margin-inline-end: 0.375rem !important;
 }
-.scoreboar-feed-badge__details {
-  background: rgb(255 255 255 / 0.98);
-  border: 1px solid rgb(207 217 222 / 0.85);
-  border-radius: 0.75rem;
-  box-shadow: 0 0.75rem 2rem rgb(15 20 25 / 0.18);
-  color: rgb(15 20 25);
+.scoreboar-feed-badge[data-scoreboar-feed-badge-placement="fallback"] {
+  margin: 0.375rem 0 0 auto !important;
+}
+.scoreboar-feed-badge__value {
+  font-variant-numeric: tabular-nums;
+}
+.scoreboar-feed-badge__value:empty {
   display: none;
-  font: 500 0.75rem/1.35 TwitterChirp, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  inline-size: 16.5rem;
-  padding: 0.75rem;
-  position: fixed;
-  right: auto;
-  top: var(--scoreboar-popover-top, 0px);
+}
+.scoreboar-feed-badge__flag {
+  color: var(--sb-danger);
+  font: 500 0.6875rem/1 var(--sb-caps);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.scoreboar-feed-badge[data-sb-ink="true"] .scoreboar-feed-badge__flag {
+  color: inherit;
+}
+.scoreboar-feed-badge__flag:empty {
+  display: none;
+}
+.scoreboar-feed-badge[data-scoreboar-feed-badge-state="unavailable"] {
+  opacity: 0.45;
+}
+.scoreboar-feed-badge__details {
+  border-radius: 1rem;
+  box-sizing: border-box;
+  display: none;
+  font-size: 0.8125rem;
+  inline-size: 18.75rem;
   left: var(--scoreboar-popover-left, 0px);
+  line-height: 1.4;
+  padding: 1.125rem;
+  position: fixed;
+  top: var(--scoreboar-popover-top, 0px);
   user-select: text;
   white-space: normal;
   z-index: 2147483647;
 }
-.scoreboar-feed-badge__details::before {
-  background: inherit;
-  border-block-start: 1px solid rgb(207 217 222 / 0.85);
-  border-inline-start: 1px solid rgb(207 217 222 / 0.85);
-  block-size: 0.625rem;
-  content: "";
-  inline-size: 0.625rem;
-  inset-block-start: -0.375rem;
-  inset-inline-start: var(--scoreboar-popover-arrow-left, 1rem);
-  position: absolute;
-  transform: rotate(45deg);
-}
 .scoreboar-feed-badge__details[data-scoreboar-feed-details-open="true"] {
   display: grid;
-  gap: 0.5rem;
+  gap: 0.75rem;
 }
-.scoreboar-feed-badge__details-title {
-  color: inherit;
-  display: flex;
-  justify-content: space-between;
-  gap: 0.5rem;
-  font-weight: 800;
+@media (prefers-reduced-motion: no-preference) {
+  .scoreboar-feed-badge__details[data-scoreboar-feed-details-open="true"] {
+    animation: sb-popover-rise 200ms var(--sb-ease);
+  }
 }
-.scoreboar-feed-badge__details-kicker {
-  color: rgb(83 100 113);
-  font-size: 0.6875rem;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
+@keyframes sb-popover-rise {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
 }
-.scoreboar-feed-badge__details-list {
+.scoreboar-feed-badge__eyebrow {
+  color: var(--sb-muted);
+  font-size: 0.75rem;
+}
+.scoreboar-feed-badge__headline {
+  font-size: 1.625rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  margin-top: -0.375rem;
+}
+.scoreboar-feed-badge__headline span {
+  color: var(--sb-muted);
+  font-size: 1rem;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+.scoreboar-feed-badge__scale {
   display: grid;
   gap: 0.375rem;
+  grid-template-columns: repeat(5, 1fr);
+}
+.scoreboar-feed-badge__scale-step {
+  background: var(--sb-pill-off);
+  block-size: 0.625rem;
+  border-radius: 999px;
+}
+.scoreboar-feed-badge__scale-step[data-on="true"] {
+  background: var(--sb-text);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .scoreboar-feed-badge__details[data-scoreboar-feed-details-open="true"] .scoreboar-feed-badge__scale-step[data-on="true"] {
+    animation: sb-step-fill 320ms var(--sb-ease) both;
+    animation-delay: calc(var(--sb-index, 0) * 60ms);
+  }
+}
+@keyframes sb-step-fill {
+  from { background: var(--sb-pill-off); }
+  to { background: var(--sb-text); }
+}
+.scoreboar-feed-badge__facts {
+  color: var(--sb-muted);
+  display: grid;
+  font-size: 0.75rem;
+  gap: 0.25rem;
+}
+.scoreboar-feed-badge__facts b {
+  color: var(--sb-text);
+  font-family: var(--sb-mono);
+  font-weight: 600;
+}
+.scoreboar-feed-badge__details-list {
+  border-top: 1px solid var(--sb-line);
+  display: grid;
+  gap: 0.625rem;
   margin: 0;
+  padding-top: 0.875rem;
 }
 .scoreboar-feed-badge__details-row {
-  align-items: start;
+  align-items: baseline;
+  column-gap: 0.75rem;
   display: grid;
-  column-gap: 0.375rem;
-  grid-template-columns: 4.75rem 1fr;
-  min-block-size: 1.375rem;
+  grid-template-columns: 4.25rem 1fr;
 }
 .scoreboar-feed-badge__details-label {
-  color: rgb(83 100 113);
-  font-weight: 700;
-  line-height: 1.375rem;
+  color: var(--sb-muted);
+  font-size: 0.75rem;
 }
 .scoreboar-feed-badge__details-value {
-  align-items: center;
-  color: rgb(15 20 25);
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.25rem;
-  font-weight: 700;
-  line-height: 1;
   margin: 0;
   min-width: 0;
 }
+.scoreboar-feed-badge__signals {
+  display: grid;
+  gap: 0.5rem;
+}
+.scoreboar-feed-badge__signal {
+  align-items: baseline;
+  column-gap: 0.5rem;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  row-gap: 0.25rem;
+}
+.scoreboar-feed-badge__signal-value {
+  font-family: var(--sb-mono);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.scoreboar-feed-badge__signal-value span {
+  color: var(--sb-muted);
+  font-weight: 400;
+}
+.scoreboar-feed-badge__signal-bar {
+  background: var(--sb-text);
+  block-size: 0.25rem;
+  border-radius: 999px;
+  grid-column: 1 / -1;
+  transform-origin: left;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .scoreboar-feed-badge__details[data-scoreboar-feed-details-open="true"] .scoreboar-feed-badge__signal-bar {
+    animation: sb-bar-grow 420ms var(--sb-ease) both;
+    animation-delay: calc(120ms + var(--sb-index, 0) * 50ms);
+  }
+}
+@keyframes sb-bar-grow {
+  from { transform: scaleX(0); }
+  to { transform: none; }
+}
 .scoreboar-feed-badge__details-chips {
-  align-items: center;
   display: flex;
   flex-wrap: wrap;
-  gap: 0.25rem;
+  gap: 0.375rem;
 }
 .scoreboar-feed-badge__details-chip {
-  align-items: center;
-  background: rgb(15 20 25 / 0.06);
-  border: 1px solid rgb(15 20 25 / 0.08);
-  border-radius: 999px;
-  color: rgb(15 20 25);
-  display: inline-flex;
-  font-size: 0.6875rem;
-  font-weight: 700;
-  line-height: 1;
-  min-block-size: 1.25rem;
-  padding: 0 0.375rem;
+  border-radius: 0.375rem;
+  font: 500 0.6875rem/1.5rem var(--sb-caps);
+  letter-spacing: 0.05em;
+  padding: 0 0.5rem;
+  text-transform: uppercase;
   white-space: nowrap;
 }
-.scoreboar-feed-badge__details-chip + .scoreboar-feed-badge__details-chip::before {
-  content: none;
-}
 .scoreboar-feed-badge__details-chip[data-scoreboar-chip-tone="danger"] {
-  background: rgb(244 63 94 / 0.12);
-  border-color: rgb(244 63 94 / 0.18);
-  color: rgb(190 18 60);
+  color: var(--sb-danger);
 }
-.scoreboar-feed-badge__details-chip[data-scoreboar-chip-tone="good"] {
-  background: rgb(5 150 105 / 0.12);
-  border-color: rgb(5 150 105 / 0.18);
-  color: rgb(4 120 87);
-}
-.scoreboar-feed-badge[data-scoreboar-feed-badge-placement="fallback"] {
-  margin: 0.375rem 0 0 auto !important;
-}
-.scoreboar-feed-badge__prefix {
-  align-items: center;
-  background: #050505;
-  border-radius: 0.3125rem;
-  color: #fff;
-  display: inline-flex;
-  flex: 0 0 auto;
-  font-size: 0.75rem;
-  font-weight: 900;
-  block-size: 1.125rem;
-  inline-size: 1.125rem;
-  justify-content: center;
-  letter-spacing: -0.04em;
-  line-height: 1;
-}
-.scoreboar-feed-badge__value {
-  color: inherit;
-  font-variant-numeric: tabular-nums;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: pre;
-}
-.scoreboar-feed-badge[data-scoreboar-feed-badge-state="scored"] .scoreboar-feed-badge__value {
-  color: var(--scoreboar-badge-ink-strong);
-  font-weight: 700;
-}
-.scoreboar-feed-badge[data-scoreboar-feed-badge-state="pending"] {
-  --scoreboar-badge-accent: rgb(100 116 139);
-}
-.scoreboar-feed-badge[data-scoreboar-feed-badge-state="scored"] {
-  --scoreboar-badge-accent: rgb(5 150 105);
-}
-.scoreboar-feed-badge[data-scoreboar-feed-badge-state="unavailable"] {
-  --scoreboar-badge-accent: rgb(83 100 113);
-  opacity: 0.48;
-}
-@media (prefers-color-scheme: dark) {
-  .scoreboar-feed-badge {
-    --scoreboar-badge-ink: rgb(113 118 123);
-    --scoreboar-badge-ink-strong: rgb(231 233 234);
-  }
-  .scoreboar-feed-badge__details {
-    background: rgb(0 0 0 / 0.92);
-    border-color: rgb(47 51 54 / 0.95);
-    color: rgb(231 233 234);
-  }
-  .scoreboar-feed-badge__details::before {
-    border-color: rgb(47 51 54 / 0.95);
-  }
-  .scoreboar-feed-badge__details-row {
-    color: rgb(113 118 123);
-  }
-  .scoreboar-feed-badge__details-kicker,
-  .scoreboar-feed-badge__details-label {
-    color: rgb(113 118 123);
-  }
-  .scoreboar-feed-badge__details-value,
-  .scoreboar-feed-badge__details-chip {
-    color: rgb(231 233 234);
-  }
-  .scoreboar-feed-badge__details-chip {
-    background: rgb(231 233 234 / 0.08);
-    border-color: rgb(231 233 234 / 0.1);
-  }
-  .scoreboar-feed-badge__details-chip[data-scoreboar-chip-tone="danger"] {
-    background: rgb(251 113 133 / 0.13);
-    border-color: rgb(251 113 133 / 0.18);
-    color: rgb(251 113 133);
-  }
-  .scoreboar-feed-badge__details-chip[data-scoreboar-chip-tone="good"] {
-    background: rgb(52 211 153 / 0.12);
-    border-color: rgb(52 211 153 / 0.18);
-    color: rgb(52 211 153);
-  }
+.scoreboar-feed-badge__details-footer {
+  color: var(--sb-muted);
+  font-size: 0.6875rem;
 }
 `.trim()
 
 const ensureBadgeStyles = (document: Document) => {
+  applyScoreboarTheme(document)
   if (document.querySelector(`style[${SCOREBOAR_BADGE_STYLE_ATTRIBUTE}="true"]`)) {
     return
   }
@@ -281,7 +291,7 @@ const fallbackResult = (text: string): ScoreTextResult => createUnavailableScore
 
 const createBadgeElement = (document: Document): HTMLElement => {
   const badge = document.createElement("div")
-  badge.className = "scoreboar-feed-badge"
+  badge.className = "scoreboar-feed-badge sb-key"
   badge.setAttribute(SCOREBOAR_BADGE_ATTRIBUTE, "true")
   badge.setAttribute("aria-live", "polite")
   badge.setAttribute("aria-label", BADGE_TEXT_BY_STATE.pending)
@@ -289,16 +299,17 @@ const createBadgeElement = (document: Document): HTMLElement => {
   badge.setAttribute("tabindex", "0")
   badge.setAttribute("aria-expanded", "false")
 
-  const prefix = document.createElement("span")
-  prefix.className = "scoreboar-feed-badge__prefix"
-  prefix.setAttribute("aria-hidden", "true")
-  prefix.textContent = "S"
+  const meter = createMeter(document)
+  meter.classList.add("scoreboar-feed-badge__meter")
 
   const value = document.createElement("span")
   value.className = "scoreboar-feed-badge__value"
 
+  const flag = document.createElement("span")
+  flag.className = "scoreboar-feed-badge__flag"
+
   const details = document.createElement("div")
-  details.className = "scoreboar-feed-badge__details"
+  details.className = "scoreboar-feed-badge__details sb-slab"
   const detailsId = `scoreboar-feed-details-${Math.random().toString(36).slice(2)}`
   details.id = detailsId
   details.setAttribute("role", "dialog")
@@ -328,12 +339,17 @@ const createBadgeElement = (document: Document): HTMLElement => {
 
   const positionDetails = () => {
     const rect = badge.getBoundingClientRect()
-    const popoverWidth = 264
+    const popoverWidth = 300
     const viewportWidth = document.defaultView?.innerWidth ?? 1024
     const viewportHeight = document.defaultView?.innerHeight ?? 768
     const triggerCenter = rect.left + rect.width / 2
     const left = Math.max(8, Math.min(triggerCenter - 28, viewportWidth - popoverWidth - 8))
-    const top = Math.max(8, Math.min(rect.bottom + 8, viewportHeight - 8))
+    // Below the badge when it fits, otherwise above it (measured once open).
+    const height = details.offsetHeight || 380
+    const below = rect.bottom + 8
+    const top = below + height <= viewportHeight - 8 || rect.top - 8 - height < 8
+      ? Math.max(8, Math.min(below, viewportHeight - height - 8))
+      : rect.top - 8 - height
     const arrowLeft = Math.max(12, Math.min(triggerCenter - left - 5, popoverWidth - 20))
     details.style.setProperty("--scoreboar-popover-left", `${left}px`)
     details.style.setProperty("--scoreboar-popover-top", `${top}px`)
@@ -388,7 +404,7 @@ const createBadgeElement = (document: Document): HTMLElement => {
   document.defaultView?.addEventListener("scroll", closeDetails, { passive: true })
   document.defaultView?.addEventListener("resize", closeDetails)
 
-  badge.append(prefix, value)
+  badge.append(meter, value, flag)
   return badge
 }
 
@@ -429,9 +445,13 @@ const findOrCreateBadge = (tweetRoot: Element, document: Document): HTMLElement 
   return badge
 }
 
-const setBadge = (badge: HTMLElement, state: FeedBadgeState, label: string) => {
+const setBadge = (badge: HTMLElement, state: FeedBadgeState, label: string, unavailableReason?: string) => {
   badge.setAttribute(SCOREBOAR_BADGE_STATE_ATTRIBUTE, state)
-  const accessibleLabel = state === "unavailable" ? "Scoreboar score unavailable: local ONNX model is not packaged yet" : `Scoreboar ${label}`
+  const accessibleLabel = state === "unavailable"
+    ? unavailableReason ?? "Scoreboar score unavailable: the on-device model is not loaded"
+    : state === "pending"
+      ? "Scoreboar is scoring this post"
+      : `Scoreboar: beats ${label}% of ordinary posts for an account this size`
   badge.setAttribute("aria-label", accessibleLabel)
   badge.setAttribute("title", accessibleLabel)
   const value = badge.querySelector<HTMLElement>(".scoreboar-feed-badge__value")
@@ -478,32 +498,29 @@ const probabilityEntries = (result: ScoreTextResult): readonly ProbabilityEntry[
     .slice(0, 3)
 }
 
-const winningClassText = (classOdds: readonly ProbabilityEntry[]): string => {
-  const [winner, runnerUp] = classOdds
-  if (!winner) return "unavailable"
-  const topIsStrong = winner.value >= 0.7 || !runnerUp || winner.value - runnerUp.value >= 0.35
-  if (topIsStrong) return winner.label
-
-  if (winner.rank !== null && runnerUp.rank !== null && Math.abs(winner.rank - runnerUp.rank) === 1) {
-    const [lower, higher] = [winner, runnerUp].sort((left, right) => (left.rank ?? 0) - (right.rank ?? 0))
-    return `${lower.name}–${higher.name} · ${Math.round((winner.value + runnerUp.value) * 100)}% range`
-  }
-
-  return `mixed · ${winner.name}/${runnerUp.name} · ${Math.round((winner.value + runnerUp.value) * 100)}% range`
+const formatMultiple = (value: number | undefined): string | null => {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null
+  return value >= 10 ? `${Math.round(value)}×` : `${value.toFixed(1)}×`
 }
 
-const reliabilityChips = (summary: ScoreLabelSummary): readonly string[] => {
-  if (summary.status === "unavailable") return ["unavailable"]
-  if (summary.stability.tier === "solid") return ["solid estimate"]
-  if (summary.stability.tier === "approx") return ["approx estimate"]
-  return ["rough estimate"]
+/** Calibrated odds, stated plainly: no merged "medium–high" ranges. */
+const oddsText = (summary: ScoreLabelSummary): string | null => {
+  if (summary.status !== "scored" || !summary.odds) return null
+  return `top 20%: ${Math.round(summary.odds.top * 100)}% · bottom 20%: ${Math.round(summary.odds.bottom * 100)}%`
 }
 
-const detailsTitleText = (summary: ScoreLabelSummary): string => {
-  if (summary.status === "unavailable") return "Score unavailable"
-  const scoreText = `${String(summary.interestingScore).padStart(3, " ")}%`
-  const prefix = emojiForScoreLabelSummary(summary)
-  return `${prefix} ${scoreText}`
+const expectedText = (summary: ScoreLabelSummary): string | null => {
+  if (summary.status !== "scored") return null
+  const engagement = formatMultiple(summary.engagementMultiple)
+  const reach = formatMultiple(summary.reachMultiple)
+  if (!engagement || !reach) return null
+  return `${engagement} engagement · ${reach} views`
+}
+
+/** Older models without calibrated odds: the single most likely fifth, never a merged range. */
+const mostLikelyText = (classOdds: readonly ProbabilityEntry[]): string => {
+  const [winner] = classOdds
+  return winner ? winner.label : "unavailable"
 }
 
 const compactSignalEntries = (result: ScoreTextResult): readonly string[] => {
@@ -528,10 +545,11 @@ const compactSignalEntries = (result: ScoreTextResult): readonly string[] => {
 
 const warningEntries = (result: ScoreTextResult): readonly string[] => {
   const warnings: readonly [string, number | boolean | undefined][] = [
-    ["🤖 slop", result.booleanScores?.is_ai_slop],
-    ["🎣 bait", result.booleanScores?.is_clickbait],
-    ["🧨 rage", result.booleanScores?.is_rage_bait],
-    ["🧩 needs context", result.booleanScores?.needs_context],
+    ["slop", result.booleanScores?.is_ai_slop],
+    ["bait", result.booleanScores?.is_clickbait],
+    ["rage", result.booleanScores?.is_rage_bait],
+    // Not "needs context": posts it flags do better than average (v8 test set,
+    // 53rd vs 45th percentile), so it is no red flag.
   ]
 
   return warnings
@@ -542,6 +560,39 @@ const warningEntries = (result: ScoreTextResult): readonly string[] => {
     .filter((entry): entry is string => entry !== null)
 }
 
+const FIFTH_NAMES = ["very_low", "low", "medium", "high", "very_high"] as const
+
+const fifthChances = (result: ScoreTextResult): readonly number[] => {
+  const raw = FIFTH_NAMES.map((name) => {
+    const value = result.probabilities[name]
+    return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0
+  })
+  const total = raw.reduce((sum, value) => sum + value, 0)
+  return total > 0 ? raw.map((value) => value / total) : raw
+}
+
+const redFlag = (summary: ScoreLabelSummary): string => {
+  if (summary.status !== "scored") return ""
+  const id = summary.insight?.id
+  return id === "slop" ? "slop" : id === "clickbait" ? "bait" : id === "rage" ? "rage" : ""
+}
+
+/** Teacher signals worth showing, strongest first, on the draft scorer's x/10 scale. */
+const signalEntries = (result: ScoreTextResult): readonly { readonly label: string; readonly value: number }[] => {
+  const signals: readonly [string, number | undefined][] = [
+    ["Opening line", result.numericScores.hook_quality],
+    ["Shareable", result.numericScores.shareability_score],
+    ["New angle", result.numericScores.novelty_score],
+    ["Draws replies", result.numericScores.conversation_potential],
+    ["Sounds like a person", result.numericScores.authenticity_score],
+  ]
+  return signals
+    .filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1]) && entry[1] >= 0.4)
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 3)
+    .map(([label, value]) => ({ label, value: Math.round(Math.min(1, Math.max(0, value)) * 100) / 10 }))
+}
+
 const setBadgeDetails = (
   badge: HTMLElement,
   summary: ScoreLabelSummary,
@@ -550,152 +601,161 @@ const setBadgeDetails = (
   const detailsId = badge.getAttribute("aria-controls")
   const details = detailsId ? badge.ownerDocument.getElementById(detailsId) : null
   if (!details) return
+  const document = badge.ownerDocument
+  const element = (tag: string, className = "", text?: string) => {
+    const node = document.createElement(tag)
+    if (className) node.className = className
+    if (text !== undefined) node.textContent = text
+    return node
+  }
 
-  const topSignals = compactSignalEntries(result)
-  const warnings = warningEntries(result)
-  const classOdds = probabilityEntries(result)
+  details.replaceChildren(element("div", "scoreboar-feed-badge__eyebrow", "Scoreboar expects"))
 
-  details.replaceChildren()
-  const title = badge.ownerDocument.createElement("div")
-  title.className = "scoreboar-feed-badge__details-title"
-  title.textContent = detailsTitleText(summary)
+  const headline = element("div", "scoreboar-feed-badge__headline")
+  if (summary.status === "scored" && summary.odds) {
+    headline.append(`Beats ${summary.interestingScore}% `, element("span", "", "of posts"))
+  } else if (summary.status === "scored") {
+    headline.append(`${summary.interestingScore}% `, element("span", "", "score"))
+  } else {
+    headline.append("No score ", element("span", "", "right now"))
+  }
+  details.append(headline)
 
-  const kicker = badge.ownerDocument.createElement("div")
-  kicker.className = "scoreboar-feed-badge__details-kicker"
-  kicker.textContent = "Local v5 ONNX"
-
-  const list = badge.ownerDocument.createElement("dl")
-  list.className = "scoreboar-feed-badge__details-list"
-
-  const appendRow = (label: string, value: string | HTMLElement) => {
-    const row = badge.ownerDocument.createElement("div")
-    row.className = "scoreboar-feed-badge__details-row"
-    const term = badge.ownerDocument.createElement("dt")
-    term.className = "scoreboar-feed-badge__details-label"
-    term.textContent = `${label}: `
-    const description = badge.ownerDocument.createElement("dd")
-    description.className = "scoreboar-feed-badge__details-value"
-    if (typeof value === "string") {
-      const chips = badge.ownerDocument.createElement("span")
-      chips.className = "scoreboar-feed-badge__details-chips"
-      const chip = badge.ownerDocument.createElement("span")
-      chip.className = "scoreboar-feed-badge__details-chip"
-      chip.textContent = value
-      chips.append(chip)
-      description.append(chips)
-    } else {
-      description.append(value)
+  if (summary.status === "scored") {
+    const level = Math.min(5, Math.floor(summary.interestingScore / 20) + 1)
+    const scale = element("div", "scoreboar-feed-badge__scale")
+    scale.setAttribute("role", "img")
+    scale.setAttribute("aria-label", `${level} of 5`)
+    for (let step = 0; step < 5; step += 1) {
+      const pill = element("span", "scoreboar-feed-badge__scale-step")
+      pill.setAttribute("data-on", String(step < level))
+      pill.style.setProperty("--sb-index", String(step))
+      scale.append(pill)
     }
-    row.append(term, description)
+    details.append(scale)
+
+    const facts = element("div", "scoreboar-feed-badge__facts")
+    if (summary.odds) {
+      facts.append(element("div", "", "Against ordinary posts from accounts this size."))
+      const chances = fifthChances(result)
+      const odds = element("div")
+      odds.append("Top fifth ", element("b", "", `${Math.round((chances[4] ?? 0) * 100)}%`), " · Bottom fifth ", element("b", "", `${Math.round((chances[0] ?? 0) * 100)}%`))
+      facts.append(odds)
+      const engagement = formatMultiple(summary.engagementMultiple)
+      const reach = formatMultiple(summary.reachMultiple)
+      if (engagement && reach) {
+        const multiples = element("div")
+        multiples.append("About ", element("b", "", engagement), " the usual engagement, ", element("b", "", reach), " the usual views")
+        facts.append(multiples)
+      }
+    } else {
+      facts.append(element("div", "", `Most likely ${mostLikelyText(probabilityEntries(result))}`))
+    }
+    details.append(facts)
+  }
+
+  const list = element("dl", "scoreboar-feed-badge__details-list")
+  const appendRow = (label: string, value: string | HTMLElement) => {
+    const row = element("div", "scoreboar-feed-badge__details-row")
+    const description = element("dd", "scoreboar-feed-badge__details-value")
+    description.append(value)
+    row.append(element("dt", "scoreboar-feed-badge__details-label", label), description)
     list.append(row)
   }
 
-  const createChips = (
-    entries: readonly string[],
-    toneFor: (entry: string) => string | null = () => null,
-    emptyText = "unavailable",
-  ): HTMLElement => {
-    const chips = badge.ownerDocument.createElement("span")
-    chips.className = "scoreboar-feed-badge__details-chips"
-    if (entries.length > 0) {
-      for (const signal of entries) {
-        const chip = badge.ownerDocument.createElement("span")
-        chip.className = "scoreboar-feed-badge__details-chip"
-        const tone = toneFor(signal)
-        if (tone) {
-          chip.setAttribute("data-scoreboar-chip-tone", tone)
-        }
-        chip.textContent = signal
-        chips.append(chip)
-      }
-    } else {
-      chips.textContent = emptyText
-    }
-    return chips
-  }
+  const signals = signalEntries(result)
+  const signalList = element("div", "scoreboar-feed-badge__signals")
+  signals.forEach(({ label, value }, index) => {
+    const signal = element("div", "scoreboar-feed-badge__signal")
+    const amount = element("span", "scoreboar-feed-badge__signal-value", value.toFixed(1))
+    amount.append(element("span", "", "/10"))
+    const bar = element("span", "scoreboar-feed-badge__signal-bar")
+    bar.style.inlineSize = `${value * 10}%`
+    bar.style.setProperty("--sb-index", String(index))
+    signal.append(element("span", "", label), amount, bar)
+    signalList.append(signal)
+  })
+  appendRow("Signals", signals.length > 0 ? signalList : "none stand out")
 
-  const signalChips = createChips(topSignals, () => null, "no strong signals")
-  const warningChips = createChips(warnings, (entry) => /^(🤖|🎣|🧨)/u.test(entry) ? "danger" : null, "no strong flags")
-
-  if (summary.status === "scored" && summary.insight?.id && ["slop", "clickbait", "rage"].includes(summary.insight.id)) {
-    const chip = badge.ownerDocument.createElement("span")
-    chip.className = "scoreboar-feed-badge__details-chip"
+  const flags = warningEntries(result)
+  const flagChips = element("span", "scoreboar-feed-badge__details-chips")
+  for (const flag of flags) {
+    const chip = element("span", "scoreboar-feed-badge__details-chip sb-key", flag)
     chip.setAttribute("data-scoreboar-chip-tone", "danger")
-    chip.textContent = `🚩 top: ${formatScoreInsight(summary.insight)}`
-    warningChips.prepend(chip)
+    flagChips.append(chip)
   }
+  appendRow("Red flags", flags.length > 0 ? flagChips : "none")
+  details.append(list)
 
-  const modelStats = badge.ownerDocument.createElement("span")
-  modelStats.className = "scoreboar-feed-badge__details-chips"
-  for (const stat of reliabilityChips(summary)) {
-      const chip = badge.ownerDocument.createElement("span")
-      chip.className = "scoreboar-feed-badge__details-chip"
-      chip.textContent = stat
-      modelStats.append(chip)
-  }
-
-  appendRow("Reliability", modelStats)
-  if (summary.status === "scored") {
-    appendRow("Style", summary.stability.tier === "uncertain" ? "rough read" : summary.insight ? formatCompactScoreInsight(summary.insight) : "balanced")
-  }
-  appendRow("Likely range", winningClassText(classOdds))
-  appendRow("Red flags", warningChips)
-  appendRow("Signals", signalChips)
-  details.append(title, kicker, list)
+  const footer = [result.model.version ? `Scoreboar ${result.model.version} on device` : "Scoreboar on device"]
+  if (summary.status === "scored") footer.push(`${summary.stability.score}% sure within one fifth`)
+  details.append(element("div", "scoreboar-feed-badge__details-footer", footer.join(" · ")))
 }
 
 const scoredBadgeText = (summary: ScoreLabelSummary): string => {
-  if (summary.status === "unavailable") {
-    return "—"
-  }
-
-  const scoreText = `${String(summary.interestingScore).padStart(3, " ")}%`
-  return `${emojiForScoreLabelSummary(summary)} ${scoreText}`
+  return summary.status === "unavailable" ? "" : String(summary.interestingScore)
 }
 
 export const createFeedBadgeController = (options: FeedBadgeControllerOptions) => {
   const { document, scorer } = options
-  const latestTweetKeys = new WeakMap<Element, string>()
+  // One token per render: a slower score for an earlier reading of the post never overwrites a newer one.
+  const latestTweetRenders = new WeakMap<Element, object>()
   const scoringGuardrails = createScoringGuardrails<FeedBadgeScoreRequest, ScoreTextResult | null | undefined>({
     concurrency: options.scoringConcurrency,
     cacheSize: options.scoringCacheSize,
     keyFor: (request) => createTextScoringCacheKey(request.text, request.metadata),
   })
+  const scheduleTimer: ScanScheduler = options.scheduler ?? ((callback, delayMs) => {
+    const timeoutId = globalThis.setTimeout(callback, delayMs)
+    return () => globalThis.clearTimeout(timeoutId)
+  })
 
   const renderTweetBadge = async (event: TweetFoundEvent): Promise<void> => {
     ensureBadgeStyles(document)
-    latestTweetKeys.set(event.root, event.key)
+    const render = {}
+    latestTweetRenders.set(event.root, render)
 
     const badge = findOrCreateBadge(event.root, document)
     setBadge(badge, "pending", BADGE_TEXT_BY_STATE.pending)
+    const pendingMeter = badge.querySelector(".scoreboar-meter")
+    if (pendingMeter) setMeter(pendingMeter, 0, "pending")
 
-    const scoreRequest = {
-      text: event.text,
-      metadata: {
-        cacheKey: event.key,
-        hasMedia: event.hasMedia,
-        createdAtHour: event.createdAtMetadata?.createdAtHour ?? null,
-        createdAtDay: event.createdAtMetadata?.createdAtDay ?? null,
-        createdAtSource: event.createdAtMetadata?.createdAtSource ?? "defaulted",
-        authorHandle: event.authorMetadata.authorHandle,
-        authorFollowers: event.authorMetadata.authorFollowers,
-        authorFollowing: event.authorMetadata.authorFollowing,
-        authorTweets: event.authorMetadata.authorTweets,
-        authorVerified: event.authorMetadata.authorVerified,
-        authorMetadataSource: event.authorMetadata.authorMetadataSource,
-        source: "tweet",
-      },
+    if (event.textTruncated === true) {
+      // The timeline shows only the start of a long post. Its draft was scored whole, so a
+      // score of the prefix would be a different post's; wait for X's response with the full text.
+      scheduleTimer(() => {
+        if (latestTweetRenders.get(event.root) !== render) return
+        setBadge(badge, "unavailable", "", "Scoreboar has only the start of this long post, so it is not scored")
+        const meter = badge.querySelector(".scoreboar-meter")
+        const { level, tone } = meterForScore(null)
+        if (meter) setMeter(meter, level, tone)
+        const flag = badge.querySelector<HTMLElement>(".scoreboar-feed-badge__flag")
+        if (flag) flag.textContent = ""
+        badge.setAttribute("data-sb-ink", "false")
+      }, TRUNCATED_TEXT_WAIT_MS)
+      return
     }
+
+    const scoreRequest = tweetScoreRequest(event)
     const result = await (scorer
       ? scoringGuardrails.score(scoreRequest, (request) => scorer.scoreTweet(request.text, request.metadata))
       : Promise.resolve(null)) ?? fallbackResult(event.text)
-    if (latestTweetKeys.get(event.root) !== event.key) {
+    if (latestTweetRenders.get(event.root) !== render) {
       return
     }
 
     const summary = mapScoreTextResultToLabel(result)
     const state: FeedBadgeState = summary.status === "scored" ? "scored" : "unavailable"
+    ensureBadgeStyles(document)
     setBadge(badge, state, scoredBadgeText(summary))
+    const { level, tone } = meterForScore(summary.status === "scored" ? summary.interestingScore : null)
+    const meter = badge.querySelector(".scoreboar-meter")
+    if (meter) setMeter(meter, level, tone)
+    const flag = badge.querySelector<HTMLElement>(".scoreboar-feed-badge__flag")
+    if (flag) flag.textContent = redFlag(summary)
+    // A top-fifth post gets the ink key, like a primary action in x11.social.
+    badge.setAttribute("data-sb-ink", String(level === 5))
+    if (state === "scored") reveal(badge.querySelector(".scoreboar-feed-badge__value"))
     setBadgeDetails(badge, summary, result)
   }
 

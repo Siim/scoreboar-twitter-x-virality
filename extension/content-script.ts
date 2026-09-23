@@ -1,5 +1,4 @@
-import { extractTweetAuthorMetadata, extractTweetCreatedAtMetadata, extractTweetText, tweetHasMedia } from "../src/contracts.js"
-import { createScoreboarDomDetector } from "../src/dom-detection.js"
+import { createScoreboarDomDetector, describeTweetRoot, readViewerAuthorMetadata } from "../src/dom-detection.js"
 import type { TweetFoundEvent } from "../src/dom-detection.js"
 import { createComposerHintController } from "../src/composer-hints.js"
 import { SCOREBOAR_COMPOSER_PANEL_ATTRIBUTE, SCOREBOAR_COMPOSER_STYLE_ATTRIBUTE } from "../src/composer-hints.js"
@@ -7,7 +6,8 @@ import { createFeedBadgeController } from "../src/feed-badges.js"
 import { SCOREBOAR_BADGE_ATTRIBUTE, SCOREBOAR_BADGE_STYLE_ATTRIBUTE } from "../src/feed-badges.js"
 import type { ScoreTextResponseMessage, ScoreTextResult } from "../src/inference-runtime.js"
 import { createScoringGuardrails, createTextScoringCacheKey } from "../src/scoring-guardrails.js"
-import type { XAuthorStats } from "../src/x-author-metadata.js"
+// Plain imports only: the classic content-script bundle drops import lines, so an alias would not exist there.
+import { enrichTweetEvent, type XAuthorStats, type XTweetFacts } from "../src/x-author-metadata.js"
 
 type ScoreboarContentChrome = {
   readonly runtime?: {
@@ -47,11 +47,25 @@ const isXAuthorStats = (value: unknown): value is XAuthorStats => {
   return typeof value === "object" && value !== null && typeof record?.authorHandle === "string"
 }
 
+// Posts are at most 25,000 characters; anything longer is not X's text.
+const MAX_FACTS_TEXT_LENGTH = 30_000
+
+const isXTweetFacts = (value: unknown): value is XTweetFacts => {
+  const record = value as Partial<XTweetFacts> | null
+  if (typeof value !== "object" || value === null || typeof record?.tweetId !== "string" || !Array.isArray(record?.mediaTypes)) return false
+  const text = record.text
+  return text === undefined || text === null || (typeof text === "string" && text.length <= MAX_FACTS_TEXT_LENGTH)
+}
+
 (() => {
   const scoreTextMessageType = "scoreboar.scoreText"
   const enabledStorageKey = "scoreboarEnabled"
   const chromeApi = (globalThis as { chrome?: ScoreboarContentChrome }).chrome
   const authorStatsByHandle = new Map<string, XAuthorStats>()
+  const tweetFactsById = new Map<string, XTweetFacts>()
+  // Who is signed in, as X's own data says (page bootstrap, Viewer query, the post just created).
+  let viewerHandle: string | null = null
+  let refreshScheduled = false
   let enabled = true
   let detector: ReturnType<typeof createScoreboarDomDetector> | null = null
   const contentScoreGuardrails = createScoringGuardrails<ScoreboarContentScoreRequest, unknown>({
@@ -140,11 +154,114 @@ const isXAuthorStats = (value: unknown): value is XAuthorStats => {
     requestScoreText,
   }
 
+  // Set while Scoreboar runs, cleared when it stops: nothing that outlives a stop may reach the page through an old controller.
+  let badgeController: ReturnType<typeof createFeedBadgeController> | null = null
+  let composerHintController: ReturnType<typeof createComposerHintController> | null = null
+  // The signed-in author's stats as the open drafts were last scored with.
+  let lastViewerSignature = ""
+
+  const running = (): boolean => enabled && detector !== null
+
+  // The draft's author is read from the same sources, in the same order, as the feed reads that author's posts.
+  const viewerMetadata = () => readViewerAuthorMetadata(document, viewerHandle, authorStatsByHandle)
+
+  const enrichForBadge = (domEvent: TweetFoundEvent): TweetFoundEvent => {
+    const event = enrichTweetEvent(domEvent, tweetFactsById, authorStatsByHandle)
+    const authorHandle = event.authorMetadata.authorHandle
+    if (event.authorMetadata.authorMetadataSource === "loaded-x-response") {
+      debug("author stats cache hit", {
+        handle: authorHandle,
+        followers: event.authorMetadata.authorFollowers,
+        following: event.authorMetadata.authorFollowing,
+        tweets: event.authorMetadata.authorTweets,
+      })
+    } else if (authorHandle) {
+      debug("author stats cache miss", { handle: authorHandle, cachedHandles: [...authorStatsByHandle.keys()].slice(0, 12) })
+    }
+    return event
+  }
+
+  // A draft typed before the signed-in author's stats arrived is rescored once they do.
+  // Compared by value: the page listener re-sends its whole cache with every batch.
+  const refreshComposersIfViewerChanged = () => {
+    if (!running() || composerHintController === null) return
+    const signature = JSON.stringify(viewerMetadata())
+    if (signature === lastViewerSignature) return
+    lastViewerSignature = signature
+    debug("signed-in author stats changed; rescoring open drafts", { handle: viewerHandle })
+    composerHintController.refresh()
+  }
+
+  const renderTweetBadgeSafely = (event: TweetFoundEvent) => {
+    if (badgeController === null) return
+    void badgeController.renderTweetBadge(event).catch((error: unknown) => {
+      handleScoreRequestError(error)
+    })
+  }
+
+  const renderExistingTweetsWithCachedStats = () => {
+    refreshScheduled = false
+    if (!running()) return
+    let rendered = 0
+    for (const root of document.querySelectorAll("article[data-testid='tweet']")) {
+      const described = describeTweetRoot(root)
+      if (described.text.length === 0) continue
+      rendered += 1
+      renderTweetBadgeSafely(enrichForBadge({ ...described, previousKey: described.key, changed: false }))
+    }
+    debug("refreshed visible tweets from loaded X data", { rendered, cachedHandles: authorStatsByHandle.size, cachedTweets: tweetFactsById.size })
+  }
+
+  // Responses arrive in bursts while scrolling; rescore once per burst.
+  const scheduleRefresh = () => {
+    if (!running() || refreshScheduled) return
+    refreshScheduled = true
+    globalThis.setTimeout(renderExistingTweetsWithCachedStats, 250)
+  }
+
+  // Registered once for the page's life. What X loads is kept even while Scoreboar is off, so it is
+  // ready when it comes back on; only a running Scoreboar rescores anything.
+  const handlePageMessage = (event: MessageEvent) => {
+    const message = event.data as ScoreboarAuthorMetadataMessage
+    if (message?.type === "scoreboar.viewer") {
+      if (!isXAuthorStats(message.payload)) return
+      viewerHandle = message.payload.authorHandle
+      authorStatsByHandle.set(message.payload.authorHandle.toLowerCase(), message.payload)
+      refreshComposersIfViewerChanged()
+      return
+    }
+    if (!Array.isArray(message?.payload)) return
+    if (message.type === "scoreboar.tweetFactsBatch") {
+      let accepted = 0
+      for (const item of message.payload) {
+        if (!isXTweetFacts(item)) continue
+        tweetFactsById.set(item.tweetId, item)
+        accepted += 1
+      }
+      if (accepted > 0) scheduleRefresh()
+      return
+    }
+    if (message.type !== "scoreboar.authorMetadataBatch") return
+    let updated = false
+    let accepted = 0
+    for (const item of message.payload) {
+      if (!isXAuthorStats(item)) continue
+      authorStatsByHandle.set(item.authorHandle.toLowerCase(), item)
+      updated = true
+      accepted += 1
+    }
+    debug("received author stats batch", { accepted, cachedHandles: authorStatsByHandle.size })
+    if (updated) {
+      scheduleRefresh()
+      refreshComposersIfViewerChanged()
+    }
+  }
+
   const startScoreboar = () => {
     if (typeof document === "undefined" || detector !== null) {
       return
     }
-    const badgeController = createFeedBadgeController({
+    badgeController = createFeedBadgeController({
       document,
       scorer: {
         scoreTweet: async (text, metadata): Promise<ScoreTextResult | null> => {
@@ -153,8 +270,9 @@ const isXAuthorStats = (value: unknown): value is XAuthorStats => {
         },
       },
     })
-    const composerHintController = createComposerHintController({
+    const composers = createComposerHintController({
       document,
+      viewerMetadata,
       scorer: {
         scoreComposer: async (text, metadata): Promise<ScoreTextResult | null> => {
           const response = await requestScoreText(text, metadata)
@@ -162,98 +280,33 @@ const isXAuthorStats = (value: unknown): value is XAuthorStats => {
         },
       },
     })
-
-    const enrichTweetEvent = (event: TweetFoundEvent): TweetFoundEvent => {
-      const authorHandle = event.authorMetadata.authorHandle
-      const cached = authorHandle ? authorStatsByHandle.get(authorHandle.toLowerCase()) : undefined
-      if (!cached) {
-        if (authorHandle) debug("author stats cache miss", { handle: authorHandle, cachedHandles: [...authorStatsByHandle.keys()].slice(0, 12) })
-        return event
-      }
-
-      debug("author stats cache hit", {
-        handle: authorHandle,
-        followers: cached.authorFollowers,
-        following: cached.authorFollowing,
-        tweets: cached.authorTweets,
-      })
-
-      return {
-        ...event,
-        authorMetadata: {
-          authorHandle: cached.authorHandle,
-          authorFollowers: cached.authorFollowers ?? event.authorMetadata.authorFollowers,
-          authorFollowing: cached.authorFollowing ?? event.authorMetadata.authorFollowing,
-          authorTweets: cached.authorTweets ?? event.authorMetadata.authorTweets,
-          authorVerified: cached.authorVerified ?? event.authorMetadata.authorVerified,
-          authorMetadataSource: "loaded-x-response",
-        },
-      }
-    }
-
-    const renderTweetBadgeSafely = (event: TweetFoundEvent) => {
-      void badgeController.renderTweetBadge(event).catch((error: unknown) => {
-        handleScoreRequestError(error)
-      })
-    }
-
-    const renderExistingTweetsWithCachedStats = () => {
-      let rendered = 0
-      for (const root of document.querySelectorAll("article[data-testid='tweet']")) {
-        const text = extractTweetText(root).replace(/\s+/g, " ").trim()
-        if (text.length === 0) continue
-        rendered += 1
-        const enriched = enrichTweetEvent({
-          root,
-          text,
-          key: text,
-          previousKey: text,
-          changed: false,
-          hasMedia: tweetHasMedia(root),
-          authorMetadata: extractTweetAuthorMetadata(root),
-          createdAtMetadata: extractTweetCreatedAtMetadata(root),
-        })
-        renderTweetBadgeSafely(enriched)
-      }
-      debug("refreshed visible tweets from author stats cache", { rendered, cachedHandles: authorStatsByHandle.size })
-    }
-
-    globalThis.addEventListener("message", (event) => {
-      const message = event.data as ScoreboarAuthorMetadataMessage
-      if (message.type !== "scoreboar.authorMetadataBatch" || !Array.isArray(message.payload)) return
-      let updated = false
-      let accepted = 0
-      for (const item of message.payload) {
-        if (!isXAuthorStats(item)) continue
-        authorStatsByHandle.set(item.authorHandle.toLowerCase(), item)
-        updated = true
-        accepted += 1
-      }
-      debug("received author stats batch", { accepted, cachedHandles: authorStatsByHandle.size })
-      if (updated) renderExistingTweetsWithCachedStats()
-    })
-    debug("requesting author stats cache replay")
-    globalThis.postMessage({ type: "scoreboar.requestAuthorMetadataBatch" }, "*")
+    composerHintController = composers
+    lastViewerSignature = JSON.stringify(viewerMetadata())
 
     detector = createScoreboarDomDetector({
       root: document,
       onTweetFound: (event) => {
         if (enabled) {
-          renderTweetBadgeSafely(enrichTweetEvent(event))
+          renderTweetBadgeSafely(enrichForBadge(event))
         }
       },
       onComposerFound: (event) => {
         if (enabled) {
-          composerHintController.renderComposerHints(event)
+          composers.renderComposerHints(event)
         }
       },
     })
+    debug("requesting author stats cache replay")
+    globalThis.postMessage({ type: "scoreboar.requestAuthorMetadataBatch" }, "*")
     detector.observe()
   }
 
   const stopScoreboar = () => {
     detector?.disconnect()
     detector = null
+    composerHintController?.dispose()
+    composerHintController = null
+    badgeController = null
     removeScoreboarUi()
   }
 
@@ -265,6 +318,7 @@ const isXAuthorStats = (value: unknown): value is XAuthorStats => {
   })
 
   if (typeof document !== "undefined") {
+    globalThis.addEventListener("message", handlePageMessage)
     void readEnabled().then((storedEnabled) => {
       enabled = storedEnabled
       if (enabled) {

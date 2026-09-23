@@ -9,10 +9,13 @@ export const SCOREBOAR_SCORE_TEXT_MESSAGE = "scoreboar.scoreText" as const
 export const SCOREBOAR_SCORE_TEXT_OFFSCREEN_MESSAGE = "scoreboar.scoreText.offscreen" as const
 export const SCOREBOAR_SCORE_TEXT_RESPONSE_MESSAGE = "scoreboar.scoreText.response" as const
 
-export const SCOREBOAR_LOCAL_ONNX_PATH = "extension/assets/model/v5-full.onnx" as const
-export const SCOREBOAR_V5_VIRALITY_TEMPERATURE = 1.325 as const
+export const SCOREBOAR_MODEL_VERSION = "v8" as const
+export const SCOREBOAR_LOCAL_ONNX_PATH = "extension/assets/model/scoreboar-v8.onnx" as const
+export const SCOREBOAR_MODEL_METADATA_PATH = "extension/assets/model/scoreboar-v8.json" as const
+/** Longest token sequence the model was trained on; longer posts keep their opening. */
+export const SCOREBOAR_MAX_TOKENS = 128 as const
 
-export const V5_NUMERIC_SCORE_NAMES = [
+export const NUMERIC_SCORE_NAMES = [
   "virality_score",
   "hook_quality",
   "clarity_score",
@@ -25,9 +28,10 @@ export const V5_NUMERIC_SCORE_NAMES = [
   "urgency_level",
   "call_to_action_strength",
   "trend_alignment",
+  "expected_performance",
 ] as const
 
-export const V5_BOOLEAN_SCORE_NAMES = [
+export const BOOLEAN_SCORE_NAMES = [
   "is_rage_bait",
   "is_clickbait",
   "is_ai_slop",
@@ -43,8 +47,8 @@ export type ScoreboarUnavailableReason =
   | "local_model_not_initialized"
   | "runtime_error"
 
-export type V5NumericScoreName = (typeof V5_NUMERIC_SCORE_NAMES)[number]
-export type V5BooleanScoreName = (typeof V5_BOOLEAN_SCORE_NAMES)[number]
+export type NumericScoreName = (typeof NUMERIC_SCORE_NAMES)[number]
+export type BooleanScoreName = (typeof BOOLEAN_SCORE_NAMES)[number]
 
 export interface ScoreTextMetadata extends MetadataPreprocessInput {
   readonly source?: "composer" | "tweet" | "fixture" | "unknown"
@@ -82,14 +86,29 @@ export type ScoreboarRuntimeMessage =
   | ScoreTextResponseMessage
 
 export type ScoreProbabilities = Readonly<Record<string, number>>
-export type NumericScores = Readonly<Partial<Record<V5NumericScoreName, number>>>
-export type BooleanScores = Readonly<Partial<Record<V5BooleanScoreName, number | boolean>>>
+export type NumericScores = Readonly<Partial<Record<NumericScoreName, number>>>
+export type BooleanScores = Readonly<Partial<Record<BooleanScoreName, number | boolean>>>
+
+/**
+ * What the model predicts about how a post will do, all calibrated on
+ * ordinary posts it never trained on.
+ */
+export interface PerformancePrediction {
+  /** 0-1: rank against ordinary posts, after accounting for the author's reach. 0.7 = beats 70%. */
+  readonly percentile: number
+  /** Predicted engagement as a multiple of what this account's reach alone predicts. */
+  readonly engagementMultiple: number
+  /** Predicted views as a multiple of what this account's reach alone predicts. */
+  readonly reachMultiple: number
+}
 
 export interface ScoreTextResult {
   readonly status: ScoreboarScoreStatus
   readonly label: ScoreboarScoreLabel
   readonly confidence: number | null
+  /** Calibrated chance of landing in each fifth of ordinary posts' performance (very_low..very_high). */
   readonly probabilities: ScoreProbabilities
+  readonly performance?: PerformancePrediction | null
   readonly numericScores: NumericScores
   readonly booleanScores?: BooleanScores
   readonly reason?: ScoreboarUnavailableReason
@@ -97,13 +116,15 @@ export interface ScoreTextResult {
   readonly model: {
     readonly provider: "local-onnx"
     readonly path: typeof SCOREBOAR_LOCAL_ONNX_PATH
+    readonly version: typeof SCOREBOAR_MODEL_VERSION
     readonly available: boolean
   }
   readonly metadataVector: readonly number[]
 }
 
 export interface LocalModelRunner {
-  readonly score: (input: ScoreTextInput, metadataVector: readonly number[]) => Promise<ScoreTextResult>
+  /** `normalizedText` is the contract-normalized text the model reads; runners fall back to the raw text. */
+  readonly score: (input: ScoreTextInput, metadataVector: readonly number[], normalizedText?: string) => Promise<ScoreTextResult>
 }
 
 export interface ScoreTextOptions {
@@ -134,7 +155,7 @@ export const createUnavailableScoreTextResult = (
   reason: ScoreboarUnavailableReason,
   message: string,
 ): ScoreTextResult => {
-  const metadataVector = preprocessMetadata({ text: input.text, ...input.metadata }).vector
+  const metadataVector = preprocessMetadata({ ...input.metadata, text: input.text }).vector
 
   return {
     status: "unavailable",
@@ -147,6 +168,7 @@ export const createUnavailableScoreTextResult = (
     model: {
       provider: "local-onnx",
       path: SCOREBOAR_LOCAL_ONNX_PATH,
+      version: SCOREBOAR_MODEL_VERSION,
       available: false,
     },
     metadataVector,
@@ -165,11 +187,11 @@ export const scoreText = async (
     )
   }
 
-  const metadataVector = preprocessMetadata({ text: input.text, ...input.metadata }).vector
+  const { vector: metadataVector, normalizedText } = preprocessMetadata({ ...input.metadata, text: input.text })
 
   if (options.runner && options.modelAvailable === true) {
     try {
-      return await options.runner.score(input, metadataVector)
+      return await options.runner.score(input, metadataVector, normalizedText)
     } catch {
       return createUnavailableScoreTextResult(
         input,

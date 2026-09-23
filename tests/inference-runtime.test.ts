@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest"
-import { V5_METADATA_FEATURE_ORDER } from "../src/contracts"
+import { METADATA_V2_FEATURE_ORDER } from "../src/contracts"
 import {
   SCOREBOAR_LOCAL_ONNX_PATH,
+  SCOREBOAR_MODEL_VERSION,
   SCOREBOAR_SCORE_TEXT_MESSAGE,
   SCOREBOAR_SCORE_TEXT_RESPONSE_MESSAGE,
   createScoreTextRequest,
@@ -46,11 +47,12 @@ describe("inference-runtime scoreText", () => {
       model: {
         provider: "local-onnx",
         path: SCOREBOAR_LOCAL_ONNX_PATH,
+        version: SCOREBOAR_MODEL_VERSION,
         available: false,
       },
     })
     expect(result.message).toContain("no text leaves the extension")
-    expect(result.metadataVector).toHaveLength(V5_METADATA_FEATURE_ORDER.length)
+    expect(result.metadataVector).toHaveLength(METADATA_V2_FEATURE_ORDER.length)
   })
 
   it("honors SCOREBOAR_DISABLE_MODEL without touching Chrome APIs or a runner", async () => {

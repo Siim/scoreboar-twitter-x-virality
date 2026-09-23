@@ -1,3 +1,5 @@
+import { type MetadataPreprocessInput, preprocessMetadata } from "./contracts.js"
+
 export const DEFAULT_SCOREBOAR_SCORING_CONCURRENCY = 3
 export const DEFAULT_SCOREBOAR_SCORING_CACHE_SIZE = 512
 
@@ -22,17 +24,6 @@ export interface ScoreboarScoringGuardrailController<Input, Result> {
 
 export type ScoreboarScoringMetadata = Readonly<Record<string, unknown>>
 
-const SCOREBOAR_GUARDRAIL_SCORING_METADATA_KEYS = [
-  "hasMedia",
-  "createdAtHour",
-  "createdAtDay",
-  "authorFollowers",
-  "authorFollowing",
-  "authorTweets",
-  "authorVerified",
-  "authorHandle",
-] as const
-
 const scoreboarGuardrailsPositiveInteger = (value: number | undefined, fallback: number): number => {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return fallback
@@ -40,8 +31,6 @@ const scoreboarGuardrailsPositiveInteger = (value: number | undefined, fallback:
 
   return Math.max(1, Math.floor(value))
 }
-
-const scoreboarGuardrailsNormalizeText = (text: string): string => text.replace(/\s+/g, " ").trim()
 
 const scoreboarGuardrailsStableStringify = (value: unknown): string => {
   if (value === null || typeof value !== "object") {
@@ -69,58 +58,19 @@ export const scoreboarStableHash = (value: string): string => {
   return hash.toString(36)
 }
 
-const scoreboarGuardrailsStringMetadataValue = (
-  metadata: object | undefined,
-  keys: readonly string[],
-): string | null => {
-  if (!metadata) {
-    return null
-  }
-
-  const metadataRecord = metadata as ScoreboarScoringMetadata
-
-  for (const key of keys) {
-    const value = metadataRecord[key]
-    if (typeof value === "string" && value.trim().length > 0) {
-      return value.trim()
-    }
-    if (typeof value === "number" && Number.isFinite(value)) {
-      return String(value)
-    }
-  }
-
-  return null
-}
-
-const scoreboarGuardrailsScoringMetadata = (metadata: object | undefined): Record<string, unknown> => {
-  const scoringMetadata: Record<string, unknown> = {}
-
-  if (!metadata) {
-    return scoringMetadata
-  }
-
-  const metadataRecord = metadata as ScoreboarScoringMetadata
-
-  for (const key of SCOREBOAR_GUARDRAIL_SCORING_METADATA_KEYS) {
-    if (metadataRecord[key] !== undefined) {
-      scoringMetadata[key] = metadataRecord[key]
-    }
-  }
-
-  return scoringMetadata
-}
-
+/**
+ * A result is reused only for the exact input the model reads: the normalized
+ * text (line breaks included) and the feature vector. Two requests share a
+ * score exactly when the model would see the same thing, so an attachment, a
+ * quote, a card, the hour or the author's details arriving later always
+ * rescores, and a caller-supplied id can never stand in for the text.
+ */
 export const createTextScoringCacheKey = (
   text: string,
   metadata?: object,
 ): string => {
-  const stableInput = {
-    id: scoreboarGuardrailsStringMetadataValue(metadata, ["scoreboarCacheKey", "cacheKey", "tweetId", "id", "key"]),
-    text: scoreboarGuardrailsNormalizeText(text),
-    metadata: scoreboarGuardrailsScoringMetadata(metadata),
-  }
-
-  return `scoreboar:${scoreboarStableHash(scoreboarGuardrailsStableStringify(stableInput))}`
+  const { normalizedText, vector } = preprocessMetadata({ ...(metadata as MetadataPreprocessInput | undefined), text })
+  return `scoreboar:${normalizedText}\u0000${vector.map((value) => value.toFixed(4)).join(",")}`
 }
 
 export const createScoringGuardrails = <Input, Result>(

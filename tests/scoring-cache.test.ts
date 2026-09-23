@@ -107,3 +107,33 @@ describe("scoring cache guardrails", () => {
     }
   })
 })
+
+describe("scoring cache keys follow the model's input", () => {
+  const key = (text: string, metadata: Record<string, unknown> = {}) => createTextScoringCacheKey(text, metadata)
+
+  it("line breaks are part of the input; spaces the model cannot see are not", () => {
+    expect(new Set([key("a b"), key("a\nb"), key("a\n\nb")]).size).toBe(3)
+    expect(key("a  b")).toBe(key("a b "))
+    expect(key("a \n b")).toBe(key("a\nb"))
+  })
+
+  it("every feature the vector carries separates entries", () => {
+    const base = { hasMedia: true, hasPhoto: true, hasVideo: false, isQuote: false, hasCard: false, createdAt: "2026-09-23T10:00:00.000Z" }
+    const variants = [
+      base,
+      { ...base, hasPhoto: false, hasVideo: true },
+      { ...base, isQuote: true },
+      { ...base, hasMedia: false, hasPhoto: false, hasCard: true },
+      { ...base, createdAt: "2026-09-23T18:00:00.000Z" },
+      { ...base, authorFollowers: 10, authorCreatedAt: "Sun Apr 03 23:48:02 +0000 2022" },
+      { ...base, authorFollowers: 10, authorCreatedAt: "Sun Apr 03 23:48:02 +0000 2022", authorFavourites: 99 },
+      { ...base, authorFollowers: 10, authorVerifiedType: "Business" },
+    ]
+    expect(new Set(variants.map((metadata) => key("same words", metadata))).size).toBe(variants.length)
+  })
+
+  it("a caller's id never stands in for the text", () => {
+    expect(key("first draft", { cacheKey: "same" })).not.toBe(key("second draft", { cacheKey: "same" }))
+    expect(key("same text", { cacheKey: "a", source: "composer" })).toBe(key("same text", { cacheKey: "b", source: "tweet" }))
+  })
+})
