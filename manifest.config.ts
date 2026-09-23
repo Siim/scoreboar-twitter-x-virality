@@ -8,6 +8,10 @@ export const manifestConfig = {
   content_security_policy: {
     extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';"
   },
+  // Cross-origin isolation gives the offscreen document SharedArrayBuffer, so
+  // ONNX Runtime can score on several threads instead of one.
+  cross_origin_embedder_policy: { value: "require-corp" },
+  cross_origin_opener_policy: { value: "same-origin" },
   action: {
     default_title: "Scoreboar",
     default_popup: "extension/popup.html",
@@ -28,6 +32,14 @@ export const manifestConfig = {
     service_worker: "extension/service-worker.js",
     type: "module"
   },
+  // The family's fonts (OFL). The content script fetches them from the
+  // extension and registers them with the FontFace API.
+  web_accessible_resources: [
+    {
+      resources: ["extension/assets/fonts/*.woff2"],
+      matches: ["https://x.com/*", "https://twitter.com/*"]
+    }
+  ],
   content_scripts: [
     {
       matches: ["https://x.com/*", "https://twitter.com/*"],

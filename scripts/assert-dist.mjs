@@ -71,7 +71,8 @@ assert(contentScript.includes("createScoringGuardrails"), "content script must i
 assert(contentScript.includes("createFeedBadgeController"), "content script must include feed badge UI");
 assert(contentScript.includes("createComposerHintController"), "content script must include composer hint UI");
 
-await assertFile("extension/assets/model/v5-full.onnx");
+await assertFile("extension/assets/model/scoreboar-v8.onnx");
+await assertFile("extension/assets/model/scoreboar-v8.json");
 await assertFile("extension/assets/tokenizer/tokenizer.json");
 
 console.info(`dist assertions passed for ${relative(root, dist)}`);

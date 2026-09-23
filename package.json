@@ -1,7 +1,7 @@
 {
   "name": "scoreboar-twitter-x-virality",
-  "version": "0.1.0",
-  "description": "Original local-first Chrome MV3 extension for scoring X/Twitter posts on-device with the Scoreboar ONNX model.",
+  "version": "0.8.0",
+  "description": "Local-first Chrome MV3 extension that scores X posts on-device against real engagement (Scoreboar v8).",
   "type": "module",
   "license": "MIT",
   "scripts": {
@@ -12,7 +12,9 @@
     "assert:dist": "node scripts/assert-dist.mjs",
     "assert:manifest": "node scripts/assert-manifest.mjs",
     "assert:no-remote-assets": "node scripts/assert-no-remote-assets.mjs",
-    "test": "vitest run"
+    "test": "vitest run",
+    "model:bench:wasm": "node scripts/bench-onnx-wasm.mjs",
+    "test:e2e": "playwright test"
   },
   "keywords": [
     "chrome-extension",

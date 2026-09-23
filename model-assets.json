@@ -1,0 +1,22 @@
+{
+  "version": "v8",
+  "repo": "siimh/scoreboar-twitter-x-virality",
+  "revision": "v8",
+  "files": {
+    "scoreboar-v8.onnx": {
+      "path": "artifacts/model/scoreboar-v8.onnx",
+      "sha256": "f085acf285b64a4d64b5c3886a49683895a0f832d7fbe7168002fb27dcf34cf3",
+      "bytes": 128384548
+    },
+    "scoreboar-v8.json": {
+      "path": "artifacts/model/scoreboar-v8.json",
+      "sha256": "29fff72a3f09d22fad19e9bfa41d20268cc4f320e0ec75d33bd4c4834579bed9",
+      "bytes": 3191
+    },
+    "tokenizer.json": {
+      "path": "artifacts/model/tokenizer.json",
+      "sha256": "fe530b837c912faf33acd6b1a15a46234259519acb967ead693c692cc2e93647",
+      "bytes": 3583326
+    }
+  }
+}

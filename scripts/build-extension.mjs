@@ -5,6 +5,10 @@ import ts from "typescript";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const dist = join(root, "dist");
+// Keep in step with SCOREBOAR_MODEL_VERSION in src/inference-runtime.ts.
+const MODEL_VERSION = "v8";
+const MODEL_FILE = `scoreboar-${MODEL_VERSION}.onnx`;
+const MODEL_METADATA_FILE = `scoreboar-${MODEL_VERSION}.json`;
 
 async function loadManifestConfig() {
   const source = await readFile(join(root, "manifest.config.ts"), "utf8");
@@ -97,11 +101,13 @@ async function main() {
   await copyModule("src/dom-detection.ts", "src/dom-detection.js");
   await copyModule("src/scoring-guardrails.ts", "src/scoring-guardrails.js");
   await copyModule("src/x-author-metadata.ts", "src/x-author-metadata.js");
+  await copyModule("src/x-autolink.ts", "src/x-autolink.js");
   await copyModule("src/local-tokenizer.ts", "src/local-tokenizer.js");
   await copyModule("src/composer-hints.ts", "src/composer-hints.js");
   await copyModule("src/feed-badges.ts", "src/feed-badges.js");
   await copyModule("src/inference-runtime.ts", "src/inference-runtime.js");
   await copyModule("src/score-mapping.ts", "src/score-mapping.js");
+  await copyModule("src/ui-theme.ts", "src/ui-theme.js");
   await copyModule("extension/service-worker.ts", "extension/service-worker.js");
   await copyStatic("extension/popup.html", "extension/popup.html");
   await copyStatic("extension/popup.js", "extension/popup.js");
@@ -111,10 +117,13 @@ async function main() {
   ], "extension/page-listener.js");
   await copyClassicBundle([
     "src/contracts.ts",
+    "src/x-author-metadata.ts",
+    "src/x-autolink.ts",
     "src/dom-detection.ts",
     "src/scoring-guardrails.ts",
     "src/inference-runtime.ts",
     "src/score-mapping.ts",
+    "src/ui-theme.ts",
     "src/composer-hints.ts",
     "src/feed-badges.ts",
     "extension/content-script.ts"
@@ -122,12 +131,18 @@ async function main() {
   await copyModule("extension/offscreen.ts", "extension/offscreen.js");
   await copyStatic("extension/offscreen.html", "extension/offscreen.html");
   await copyRuntimeWasmAssets();
+  for (const font of await readdir(join(root, "extension", "assets", "fonts"))) {
+    if (font.endsWith(".woff2") || font.endsWith(".txt")) {
+      await copyAssetIfExists(`extension/assets/fonts/${font}`, `extension/assets/fonts/${font}`);
+    }
+  }
   await copyAssetIfExists("extension/assets/icons/icon-16.png", "extension/assets/icons/icon-16.png");
   await copyAssetIfExists("extension/assets/icons/icon-32.png", "extension/assets/icons/icon-32.png");
   await copyAssetIfExists("extension/assets/icons/icon-48.png", "extension/assets/icons/icon-48.png");
   await copyAssetIfExists("extension/assets/icons/icon-128.png", "extension/assets/icons/icon-128.png");
-  await copyAssetIfExists("artifacts/model/v5-full.onnx", "extension/assets/model/v5-full.onnx");
-  await copyAssetIfExists("model/v5-source/tokenizer/tokenizer.json", "extension/assets/tokenizer/tokenizer.json");
+  await copyAssetIfExists(`artifacts/model/${MODEL_FILE}`, `extension/assets/model/${MODEL_FILE}`);
+  await copyAssetIfExists(`artifacts/model/${MODEL_METADATA_FILE}`, `extension/assets/model/${MODEL_METADATA_FILE}`);
+  await copyAssetIfExists("artifacts/model/tokenizer.json", "extension/assets/tokenizer/tokenizer.json");
   await writeFile(
     join(dist, "extension", "assets", "README.md"),
     [

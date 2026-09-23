@@ -8,6 +8,10 @@ const allowedRemoteLiterals = new Set([
   "https://x.com/*",
   "https://twitter.com/*",
   "https://web.dev/cross-origin-isolation-guide/",
+  // Not fetched: the text contract marks a post's links with these, so the
+  // model reads them as [link] (contracts.ts, x-autolink.ts).
+  "https://link",
+  "https://${run}",
 ]);
 const forbiddenPatterns = [
   { name: "all urls", regex: /<all_urls>/i },
@@ -45,6 +49,10 @@ for (const file of await listFiles(dist)) {
     continue;
   }
   if (!textExtensions.has(extensionFor(file))) {
+    continue;
+  }
+  // Font licence texts must ship with the fonts; their links are citations.
+  if (/[\\/]fonts[\\/]OFL-[^\\/]+\.txt$/u.test(file)) {
     continue;
   }
   const text = await readFile(file, "utf8");
