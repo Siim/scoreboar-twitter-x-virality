@@ -10,13 +10,38 @@ The score answers one question: compared with ordinary posts from accounts this 
 
 ## What's new in v8
 
-- **Trained on outcomes.** v8 learned from the real engagement and views of 27,009 fresh posts, relative to what each author's reach predicts. Earlier versions copied an LLM's opinion of the text, which barely predicts how posts do. On 1,230 held-out posts from unseen authors, rank correlation with real performance went from 0.06 to 0.34.
+- **Much better predictions.** Shown two posts, v8 picks the one that did better for its account size 61% of the time. grok-4.7 asked the same question gets 55% and Jev 52.5%. The previous release got 52%, barely above a coin flip. Of the posts v8 rates in its top fifth, only 6% ended up in the real bottom fifth, where chance would put 20%.
+- **Trained on outcomes.** v8 learned from what actually happened to about 23,500 fresh posts (plus 48k older ones): their engagement and views, relative to what each author's reach predicts. Earlier versions copied an LLM's opinion of the text, which barely predicts how posts do.
 - **Calibrated numbers.** The headline is a percentile, and the fifth probabilities are calibrated (expected calibration error 0.014). The old "medium–high" ranges are gone.
 - **Faster and smaller.** A 32M-parameter [Ettin](https://huggingface.co/jhu-clsp/ettin-encoder-32m) encoder instead of ModernBERT-base: 30 ms per post instead of about a second, and 128 MB instead of 597 MB.
 - **Reads more of the post.** Photo vs. video, quotes, link cards, account age and likes given, all from data X has already loaded into the page. The draft score uses the same inputs the published post will get.
 - **x11.social design.** Raised keys, a five-step scale, light and dark themes that follow X's display setting, and motion that respects Reduce motion.
 
-The chart below compares v8 with the LLM teachers it learned from and with the previous release. [MODEL_CARD.md](MODEL_CARD.md) has the full evaluation, the training data, and what did not work.
+What this means when you write: a high score makes it much less likely a post sinks, and a low one is worth a second look before you post. The model still gets plenty of single posts wrong, so treat the score as a way to tilt the odds. It does not promise reach or virality.
+
+## How accurate is it?
+
+Tested on 1,230 ordinary posts, at least 72 hours old, from 1,186 authors the model never trained on. "Better" always means better for the account's size: a post's likes, reposts, replies, quotes and views compared with what is typical for an account with the same followers, following, post count, likes given, age and verification.
+
+| | Picks the better of two posts | Picks a clear winner over a clear loser | Top-fifth hit rate |
+|---|---|---|---|
+| **Scoreboar v8** (32M, in your browser) | **61.4%** | **77.1%** | **34.6%** |
+| grok-4.7, asked to forecast | 55.3% | 61.1% | 29.2% |
+| Jev, asked to forecast | 52.5% | 55.8% | 23.3% |
+| Previous Scoreboar | 52.0% | 53.5% | 22.8% |
+| Coin flip | 50% | 50% | 20% |
+
+- **Picks the better of two posts.** Take any two test posts. How often does the model score higher the one that did better?
+- **Picks a clear winner over a clear loser.** One post that did far better than its account usually does (the typical one got about 6 times the expected engagement and views) and one that did far worse (a fifth to a quarter). This is the easy case, so don't read it as overall accuracy.
+- **Top-fifth hit rate.** Of the posts the model puts in its own top fifth, the share that really landed in the top fifth. v8 is at about 1.7 times chance.
+
+Almost every test pair is two different people's posts. Comparing two drafts from the same account was not tested on its own; there are too few such pairs in the test set.
+
+The gaps over Jev and the previous release hold up on all three measures under bootstrap resampling. Over grok-4.7 they hold up on the first two; the top-fifth hit rate gap (34.6% vs 29.2%) is within the noise.
+
+This compares one job: predicting how an X post performs for its account size. Jev is TypeSafe's text classifier. It is cheap to run and good at describing what a post is, and it was not built to forecast X engagement. grok-4.7 and Jev saw the same post and context (account size, media, quote, link, posting time) and gave an opinion. v8 learned from what really happened. That is how a 32M-parameter model running in your browser comes out ahead at this one task.
+
+The technical measure is rank correlation with real performance: 0.34 for v8, 0.16 for grok-4.7, 0.07 for Jev and 0.06 for the previous release. The chart below shows it. [MODEL_CARD.md](MODEL_CARD.md) has the confidence intervals, simple baselines to compare against, the training data, and what did not work.
 
 ![What predicts how a post does](docs/scoreboar-v8-eval.png)
 
@@ -120,7 +145,7 @@ MODEL_CARD.md                  model documentation (also the Hugging Face card)
 
 ## Limits
 
-The score is a forecast with real uncertainty: rank correlation 0.34 is good for comparing drafts and catching weak ones, not for promises. It does not look at images or video content, it is mostly English, and it knows X as of September 2026. See [MODEL_CARD.md](MODEL_CARD.md).
+The score is a forecast with real uncertainty. It is right about which of two posts did better 61% of the time, so it gets plenty of single calls wrong. Use it to catch weak drafts and tilt the odds, and don't read it as a promise. It does not look at images or video content, it is mostly English, and it knows X as of September 2026. See [MODEL_CARD.md](MODEL_CARD.md).
 
 ## License
 
