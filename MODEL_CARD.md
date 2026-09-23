@@ -106,7 +106,32 @@ Text is normalized before tokenizing: URLs become `[link]`, and media links are 
 
 Unknown values are neutral and flagged, never zero-filled. For example, a quote status that is unknown is 0.25, and media of unknown type counts as 0.7 photo and 0.3 video.
 
-The exact contract lives in `src/contracts.ts` (TypeScript) and in the Python trainer. `fixtures/feature-contract-v2.json` pins both to the same outputs for a set of reference posts. Feeding the model differently prepared inputs gives different scores.
+In order, with counts and lengths taken from the normalized text:
+
+| # | Name | Value |
+|---|---|---|
+| 1 | `has_media` | 1 if the post has a photo, video or GIF |
+| 2 | `has_photo` | 1 or 0; 0.7 when there is media of unknown type |
+| 3 | `has_video` | 1 or 0, GIFs included; 0.3 when there is media of unknown type |
+| 4 | `is_quote` | 1 or 0; 0.25 when unknown |
+| 5 | `has_link` | 1 if the text has a link or the post has a link card |
+| 6, 7 | `hour_sin`, `hour_cos` | UTC time of posting on a 24-hour circle; both 0 when unknown |
+| 8, 9 | `weekday_sin`, `weekday_cos` | UTC weekday (Monday is 0) on a 7-day circle; both 0 when unknown |
+| 10 | `author_known` | 1 when the author's follower count is known |
+| 11 | `log_followers` | ln(1 + followers) / 20; 0 when the author is unknown |
+| 12 | `log_following` | ln(1 + following) / 20; 0 when the author is unknown |
+| 13 | `log_statuses` | ln(1 + posts) / 20; 0 when the author is unknown |
+| 14 | `author_verified` | 1 if the author is known and verified |
+| 15 | `author_org_verified` | 1 for business or government verification |
+| 16 | `author_details_known` | 1 when the account's creation date is known |
+| 17 | `log_favourites` | ln(1 + likes given) / 20; 0 when details are unknown |
+| 18 | `account_age` | account age in years at posting time / 20, capped at 20 years |
+| 19 | `log_text_chars` | ln(1 + characters) / 8, capped at 1 |
+| 20 | `line_breaks` | line breaks / 20, capped at 20 |
+| 21 | `hashtag_count` | hashtags / 10, capped at 10 |
+| 22 | `mention_count` | mentions / 10, capped at 10 |
+
+The exact contract lives in `src/contracts.ts` (TypeScript) and in the Python trainer. `fixtures/feature-contract-v2.json` pins both to the same outputs for a set of reference posts. Feeding the model differently prepared inputs gives different scores. To run the model outside the extension with the same preparation, [`examples/express-service`](https://github.com/Siim/scoreboar-twitter-x-virality/tree/main/examples/express-service) wraps it in a small HTTP API.
 
 ## Outputs
 
@@ -120,6 +145,29 @@ The exact contract lives in `src/contracts.ts` (TypeScript) and in the Python tr
 | `categorical_logits_*` | [batch, n] | primary emotion, target audience, content type, expected likes band |
 
 Inputs are `input_ids` and `attention_mask` (int64, [batch, sequence], up to 128 tokens) and `metadata` (float32, [batch, 22]). Output and feature names are listed in `scoreboar-v8.json`.
+
+### What each head holds
+
+The extension reads the first five outputs:
+
+- `performance`: the headline percentile, shown as "Beats N% of posts".
+- `outcomes`: standardized performance, then the log engagement residual and the log views residual, all relative to what the author's reach predicts. `exp` of the last two gives the engagement and views multiples.
+- `virality_logits`: the fifths in order `very_low`, `low`, `medium`, `high`, `very_high`. The calibration temperature is already in the graph, so a plain softmax gives the calibrated chances.
+- `numeric_scores`, 0 to 10, in order: `virality_score`, `hook_quality`, `clarity_score`, `novelty_score`, `emotional_intensity`, `controversy_level`, `shareability_score`, `conversation_potential`, `authenticity_score`, `urgency_level`, `call_to_action_strength`, `trend_alignment`, `expected_performance`.
+- `boolean_logits`, in order: `is_rage_bait`, `is_clickbait`, `is_ai_slop`, `needs_context`, `has_clear_takeaway`. The per-flag temperatures are in the graph too, so a plain sigmoid gives the calibrated chances.
+
+`virality_score` and `expected_performance` are learned from grok-4.7's own guesses at how a post will do, and those guesses predicted real outcomes poorly (see Evaluation). Use `performance` for the forecast.
+
+The four categorical heads were extra supervision during training. They are in the export, but the extension does not show them and they are not calibrated. Classes in index order, as in `label_maps` in `scoreboar-v8.json`:
+
+| Output | Classes |
+|---|---|
+| `categorical_logits_primary_emotion` | anger, anticipation, curiosity, disgust, fear, humor, inspiration, joy, neutral, outrage, sadness, surprise, trust |
+| `categorical_logits_target_audience` | business, crypto, entertainment, finance, gaming, general, lifestyle, news, politics, science, sports, tech |
+| `categorical_logits_content_type` | advice, announcement, complaint, joke, meme, news, observation, opinion, promotion, question, story, thread |
+| `categorical_logits_expected_likes_band` | 0, 1-4, 5-19, 20-99, 100-499, 500-1999, 2000-9999, 10000+ |
+
+`expected_likes_band` is grok-4.7's guess at a like count, not a forecast from outcomes.
 
 ## Files
 

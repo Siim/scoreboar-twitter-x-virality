@@ -4,6 +4,8 @@ Scoreboar is a Chrome extension that scores posts on X while you read and while 
 
 ![Scoreboar v8 on an X timeline](docs/scoreboar-v8.png)
 
+![Scoreboar scores drafts as you type: the composer pill reads "Beats 41%" next to one writing hint](docs/assets/scoreboar-composer-screenshot.png)
+
 The score answers one question: compared with ordinary posts from accounts this size, how is this post likely to do? "Beats 46% of posts" means the model expects it to do better than 46% of them once account size is accounted for. Open the badge for the chance of landing in the top or bottom fifth, expected engagement and views as multiples of the account's usual, and what the model noticed about the text.
 
 ## What's new in v8
@@ -48,6 +50,37 @@ The model is not in git. `npm run build:hf` downloads it from [siimh/scoreboar-t
 
 To try another revision, set `SCOREBOAR_HF_REPO` and/or `SCOREBOAR_HF_REVISION`. Hash checks are skipped for overridden downloads, so only point these at repos you trust.
 
+## Use the model outside the extension
+
+`examples/express-service/` runs the same model behind a small HTTP API with ONNX Runtime for Node. It prepares posts with the extension's own tokenizer and feature contract, so a post sent to it gets the inputs it would get in Chrome.
+
+```bash
+npm run download:model
+cd examples/express-service
+npm install
+npm run build
+npm start
+```
+
+Send a post to `POST /score` as JSON with `text` and `metadata`:
+
+```bash
+curl -s http://127.0.0.1:8787/score \
+  -H 'content-type: application/json' \
+  -d '{"text":"We cut onboarding from 7 steps to 2 last week. Activation went from 31% to 58%.","metadata":{"createdAt":"2026-09-22T14:00:00Z","hasMedia":false,"authorFollowers":1200,"authorFollowing":310,"authorTweets":4100,"authorVerified":false}}'
+```
+
+`metadata` takes the same camelCase fields the extension sends (`MetadataPreprocessInput` in `src/contracts.ts`). Leave out what you do not know: the contract marks a missing value as unknown instead of treating it as zero. Send the author's stats when you have them, because the score is relative to account size.
+
+The main fields in the response:
+
+- `performance.percentile`: 0 to 1, the number behind "Beats N% of posts".
+- `performance.engagementMultiple` and `performance.reachMultiple`: expected engagement and views as multiples of what the account usually gets.
+- `probabilities`: the calibrated chance of each fifth, `very_low` to `very_high`.
+- `numericScores` and `booleanScores`: the explanation heads, scores from 0 to 10 and flag chances from 0 to 1.
+
+The example's README has the full request and response. The extension does not use this service; it runs the model itself.
+
 ## Development
 
 ```bash
@@ -73,6 +106,7 @@ manifest.config.ts             extension manifest source
 extension/                     MV3 entry points, popup, icons, fonts, page listener
 src/                           DOM reading, feature contract, scoring UI, theme
 scripts/                       build, asserts, Hugging Face download, benchmark
+examples/express-service/      optional Node HTTP API around the same model
 fixtures/                      X-like pages and the feature-contract fixture
 tests/                         unit and integration tests
 MODEL_CARD.md                  model documentation (also the Hugging Face card)
