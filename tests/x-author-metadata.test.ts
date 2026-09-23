@@ -6,6 +6,7 @@ import {
   extractXViewerFromInitialState,
   applyTweetFacts,
   mergeAuthorMetadata,
+  mergeTweetFacts,
 } from "../src/x-author-metadata"
 
 describe("x author metadata extraction", () => {
@@ -199,6 +200,22 @@ describe("x tweet facts text: the post as x.com shows it, whole", () => {
     }
     expect(applyTweetFacts(event, facts(true))).toMatchObject({ text: "Start of a long post, whole", textTruncated: false })
     expect(applyTweetFacts(event, facts(false)).textTruncated).toBe(true)
+  })
+
+  it("keeps a long post's whole note when a later reading carries only the preview", () => {
+    const whole = tweet({ full_text: "Start of a long…" }, { note_tweet: { note_tweet_results: { result: { text: "Start of a long post, whole" } } } })
+    const preview = tweet({ full_text: "Start of a long…", extended_entities: { media: [{ type: "photo", url: "https://t.co/p" }] } })
+    const factsOf = (result: unknown) => extractXTweetFactsFromGraphql({ data: { tweet_results: { result } } })[0]!
+
+    // The same post twice in one response, the note first.
+    expect(extractXTweetFactsFromGraphql({ data: { a: { result: whole }, b: { result: preview } } })).toEqual([
+      expect.objectContaining({ text: "Start of a long post, whole", textIsFullNote: true, mediaTypes: ["photo"] }),
+    ])
+    // Across responses: the later reading's other facts, the note's text.
+    expect(mergeTweetFacts(factsOf(whole), factsOf(preview))).toMatchObject({ text: "Start of a long post, whole", textIsFullNote: true, mediaTypes: ["photo"] })
+    expect(mergeTweetFacts(factsOf(preview), factsOf(whole))).toEqual(factsOf(whole))
+    expect(mergeTweetFacts(factsOf(preview), { ...factsOf(preview), text: null })).toMatchObject({ text: "Start of a long…", textIsFullNote: false })
+    expect(mergeTweetFacts(undefined, factsOf(preview))).toEqual(factsOf(preview))
   })
 })
 

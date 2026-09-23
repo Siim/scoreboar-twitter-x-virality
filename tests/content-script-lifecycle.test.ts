@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterAll, describe, expect, it, vi } from "vitest"
+import { SCOREBOAR_BADGE_ATTRIBUTE, SCOREBOAR_BADGE_STATE_ATTRIBUTE } from "../src/feed-badges"
 
 // The content script as it runs on x.com: turned off and on from the popup
 // while X keeps sending the signed-in author's stats.
@@ -98,5 +99,41 @@ describe("content script on and off", () => {
     await sendStats(95)
     expect(scored).toEqual(["hello world draft", "a completely different newer draft", "a completely different newer draft"])
     expect(panels()).toEqual([{ visible: true, value: "Beats 77%" }])
+  }, 15_000)
+})
+
+describe("content script and X's facts about a post", () => {
+  it("a later response with only a long post's preview never takes back its whole note", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => undefined)
+    // The running content script from above, or a fresh one when this test runs alone.
+    type TestChrome = { runtime: { id: string, sendMessage?: (message: { payload: { text: string } }) => Promise<unknown> }, storage: unknown }
+    const chrome = ((globalThis as { chrome?: TestChrome }).chrome ??= {
+      runtime: { id: "scoreboar-test" },
+      storage: { local: { get: async (defaults: Record<string, unknown>) => defaults } },
+    })
+    const scored: string[] = []
+    chrome.runtime.sendMessage = async (message) => {
+      scored.push(message.payload.text)
+      return scoredResponse(0.5)
+    }
+    document.body.innerHTML = `
+      <main><article data-testid="tweet">
+        <div data-testid="User-Name"><a href="/boar">Boar</a><a href="/boar/status/77"><time datetime="2026-09-18T22:07:33.000Z">Sep 18</time></a></div>
+        <div data-testid="tweetText">Start of a long</div>
+        <button data-testid="tweet-text-show-more-link">Show more</button>
+      </article></main>`
+    await import("../extension/content-script")
+
+    const facts = { tweetId: "77", authorHandle: "boar", createdAt: "Fri Sep 18 22:07:33 +0000 2026", isQuote: false, mediaTypes: [], hasCard: false }
+    const badgeState = () => document.querySelector(`[${SCOREBOAR_BADGE_ATTRIBUTE}="true"]`)?.getAttribute(SCOREBOAR_BADGE_STATE_ATTRIBUTE)
+    window.postMessage({ type: "scoreboar.tweetFactsBatch", payload: [{ ...facts, text: "Start of a long post, whole", textIsFullNote: true }] }, "*")
+    await vi.waitFor(() => expect(badgeState()).toBe("scored"), { timeout: 3000 })
+    expect(scored).toEqual(["Start of a long post, whole"])
+
+    // A later response without the note: the post keeps its whole text and its score.
+    window.postMessage({ type: "scoreboar.tweetFactsBatch", payload: [{ ...facts, text: "Start of a long…", textIsFullNote: false }] }, "*")
+    await sleep(600)
+    expect(badgeState()).toBe("scored")
+    expect(scored).toEqual(["Start of a long post, whole"])
   }, 15_000)
 })

@@ -294,11 +294,30 @@ export const extractXAuthorStatsFromGraphql = (payload: unknown): readonly XAuth
   return [...statsByHandle.values()]
 }
 
+// How much of a post's text a reading carries: none, the text X sent, or a long post's whole note.
+const textCompleteness = (facts: XTweetFacts): number => {
+  if (facts.textIsFullNote === true) return 2
+  return typeof facts.text === "string" && facts.text.trim().length > 0 ? 1 : 0
+}
+
+/**
+ * Two readings of the same post, the later one second. A post's text never
+ * changes (an edit is a new post id), but a response can carry a long post
+ * without its note, only the cut preview, and the same post can come twice in
+ * one response. So the later reading wins except for its text, which never
+ * goes back to less: a preview in place of the note would score a shorter
+ * post than the one that was drafted, or leave a full post unscored.
+ */
+export const mergeTweetFacts = (earlier: XTweetFacts | undefined, later: XTweetFacts): XTweetFacts => {
+  if (!earlier || textCompleteness(later) >= textCompleteness(earlier)) return later
+  return { ...later, text: earlier.text, textIsFullNote: earlier.textIsFullNote }
+}
+
 export const extractXTweetFactsFromGraphql = (payload: unknown): readonly XTweetFacts[] => {
   const factsById = new Map<string, XTweetFacts>()
   visitGraphql(payload, (record) => {
     const facts = factsFromTweetResult(record)
-    if (facts) factsById.set(facts.tweetId, facts)
+    if (facts) factsById.set(facts.tweetId, mergeTweetFacts(factsById.get(facts.tweetId), facts))
   })
   return [...factsById.values()]
 }

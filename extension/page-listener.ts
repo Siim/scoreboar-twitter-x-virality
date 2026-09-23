@@ -3,7 +3,9 @@ import {
   extractXTweetFactsFromGraphql,
   extractXViewerFromGraphql,
   extractXViewerFromInitialState,
+  mergeTweetFacts,
   type XAuthorStats,
+  type XTweetFacts,
 } from "../src/x-author-metadata.js"
 
 type ScoreboarPageMessage = {
@@ -23,7 +25,7 @@ type ScoreboarRequestMessage = {
   if (globalScope.__scoreboarAuthorListenerInstalled) return
   globalScope.__scoreboarAuthorListenerInstalled = true
   const statsByHandle = new Map<string, unknown>()
-  const factsByTweetId = new Map<string, unknown>()
+  const factsByTweetId = new Map<string, XTweetFacts>()
   let viewerHandle: string | null = null
 
   const debug = (message: string, details?: unknown) => {
@@ -55,16 +57,19 @@ type ScoreboarRequestMessage = {
   const postTweetFacts = (payload: unknown) => {
     const facts = extractXTweetFactsFromGraphql(payload)
     if (facts.length === 0) return
-    for (const fact of facts) {
+    // Sent and replayed as the fullest reading so far: a later response without a long post's note keeps the note.
+    const kept = facts.map((fact) => {
+      const merged = mergeTweetFacts(factsByTweetId.get(fact.tweetId), fact)
       factsByTweetId.delete(fact.tweetId)
-      factsByTweetId.set(fact.tweetId, fact)
-    }
+      factsByTweetId.set(fact.tweetId, merged)
+      return merged
+    })
     while (factsByTweetId.size > MAX_CACHED_TWEET_FACTS) {
       const oldest = factsByTweetId.keys().next().value
       if (oldest === undefined) break
       factsByTweetId.delete(oldest)
     }
-    const message: ScoreboarPageMessage = { type: "scoreboar.tweetFactsBatch", payload: facts }
+    const message: ScoreboarPageMessage = { type: "scoreboar.tweetFactsBatch", payload: kept }
     globalScope.postMessage(message, "*")
   }
 

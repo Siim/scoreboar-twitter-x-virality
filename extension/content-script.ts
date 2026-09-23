@@ -7,7 +7,7 @@ import { SCOREBOAR_BADGE_ATTRIBUTE, SCOREBOAR_BADGE_STYLE_ATTRIBUTE } from "../s
 import type { ScoreTextResponseMessage, ScoreTextResult } from "../src/inference-runtime.js"
 import { createScoringGuardrails, createTextScoringCacheKey } from "../src/scoring-guardrails.js"
 // Plain imports only: the classic content-script bundle drops import lines, so an alias would not exist there.
-import { enrichTweetEvent, type XAuthorStats, type XTweetFacts } from "../src/x-author-metadata.js"
+import { enrichTweetEvent, mergeTweetFacts, type XAuthorStats, type XTweetFacts } from "../src/x-author-metadata.js"
 
 type ScoreboarContentChrome = {
   readonly runtime?: {
@@ -235,7 +235,8 @@ const isXTweetFacts = (value: unknown): value is XTweetFacts => {
       let accepted = 0
       for (const item of message.payload) {
         if (!isXTweetFacts(item)) continue
-        tweetFactsById.set(item.tweetId, item)
+        // A replay or a later response may carry only a long post's preview; the note stays.
+        tweetFactsById.set(item.tweetId, mergeTweetFacts(tweetFactsById.get(item.tweetId), item))
         accepted += 1
       }
       if (accepted > 0) scheduleRefresh()
