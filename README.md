@@ -41,6 +41,8 @@ The gaps over Jev and the previous release hold up on all three measures under b
 
 This compares one job: predicting how an X post performs for its account size. Jev is TypeSafe's text classifier. It is cheap to run and good at describing what a post is, and it was not built to forecast X engagement. grok-4.7 and Jev saw the same post and context (account size, media, quote, link, posting time) and gave an opinion. v8 learned from what really happened. That is how a 32M-parameter model running in your browser comes out ahead at this one task.
 
+![At predicting how X posts perform, Scoreboar v8 beats Grok 4.7 and Jev](docs/scoreboar-v8-versus.png)
+
 The technical measure is rank correlation with real performance: 0.34 for v8, 0.16 for grok-4.7, 0.07 for Jev and 0.06 for the previous release. The chart below shows it. [MODEL_CARD.md](MODEL_CARD.md) has the confidence intervals, simple baselines to compare against, the training data, and what did not work.
 
 ![What predicts how a post does](docs/scoreboar-v8-eval.png)

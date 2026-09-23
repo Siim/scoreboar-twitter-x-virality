@@ -59,6 +59,8 @@ Held-out test set: 1,230 ordinary posts (English, no replies), at least 72 hours
 | Previous Scoreboar release (`v5-full.onnx`) | 52.0% (50.1 to 53.9) | 53.5% (48.3 to 58.8) | 22.8% (18.3 to 28.0) |
 | Coin flip | 50% | 50% | 20% |
 
+![At predicting how X posts perform, Scoreboar v8 beats Grok 4.7 and Jev](https://huggingface.co/siimh/scoreboar-twitter-x-virality/resolve/main/assets/scoreboar-v8-versus.png)
+
 - **Picks the better of two posts.** Over every pair of test posts, how often the model scores higher the one that did better. A tie in the model's score counts as half. grok-4.7 gives tied scores on 2.7% of pairs and Jev on 0.8%; dropping those pairs moves their rates by 0.2 points at most.
 - **Picks a clear winner over a clear loser.** Pairs of one post from the real top fifth and one from the real bottom fifth. The median top-fifth post got 54 likes and 1.7k views, about 6 times what its account size predicts. The median bottom-fifth post got 0 likes and 65 views, a fifth to a quarter of the prediction. This is the easy case and should not be read as overall accuracy.
 - **Top-fifth hit rate.** Of the posts each model ranks in its own top fifth, the share that really landed in the top fifth. Chance is 20%, so v8 is at about 1.7 times chance.
