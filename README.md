@@ -1,74 +1,52 @@
-# Scoreboar Twitter/X Virality
+# Scoreboar for X
 
-Scoreboar is the original local-first Chrome MV3 extension that adds compact scoring labels to X/Twitter timeline posts and lightweight hints while drafting a post. This public package uses the same extension scripts, DOM detection, popup, icons, styles, and build pipeline as the working private extension; the only publishing-specific addition is a Hugging Face download script for the large ONNX model assets.
+Scoreboar is a Chrome extension that scores posts on X while you read and while you write. Every post in the timeline gets a small badge, and the composer shows a live score as you type. The model runs inside the extension. Nothing is sent anywhere.
 
-## What it does
+![Scoreboar v8 on an X timeline](docs/scoreboar-v8.png)
 
-- Adds one compact badge per detected `article[data-testid="tweet"]` on `https://x.com/*` and `https://twitter.com/*`.
-- Adds debounced composer hints for X post textareas/contenteditable composer boxes.
-- Passively reads author metadata only when X has already loaded it into same-page GraphQL responses.
-- Runs local ONNX inference in a Chrome offscreen document.
-- Keeps model, tokenizer, ONNX Runtime Web, and WASM assets packaged locally under `dist/`.
+The score answers one question: compared with ordinary posts from accounts this size, how is this post likely to do? "Beats 46% of posts" means the model expects it to do better than 46% of them once account size is accounted for. Open the badge for the chance of landing in the top or bottom fifth, expected engagement and views as multiples of the account's usual, and what the model noticed about the text.
 
-It has no backend, no telemetry, no auth handling, no cloud sync, no extra X API/profile probing, and no runtime CDN/model fetches.
+## What's new in v8
 
-## Install in Chrome
+- **Trained on outcomes.** v8 learned from the real engagement and views of 27,009 fresh posts, relative to what each author's reach predicts. Earlier versions copied an LLM's opinion of the text, which barely predicts how posts do. On 1,230 held-out posts from unseen authors, rank correlation with real performance went from 0.06 to 0.34.
+- **Calibrated numbers.** The headline is a percentile, and the fifth probabilities are calibrated (expected calibration error 0.014). The old "medium–high" ranges are gone.
+- **Faster and smaller.** A 32M-parameter [Ettin](https://huggingface.co/jhu-clsp/ettin-encoder-32m) encoder instead of ModernBERT-base: 30 ms per post instead of about a second, and 128 MB instead of 597 MB.
+- **Reads more of the post.** Photo vs. video, quotes, link cards, account age and likes given, all from data X has already loaded into the page. The draft score uses the same inputs the published post will get.
+- **x11.social design.** Raised keys, a five-step scale, light and dark themes that follow X's display setting, and motion that respects Reduce motion.
+
+The chart below compares v8 with the LLM teachers it learned from and with the previous release. [MODEL_CARD.md](MODEL_CARD.md) has the full evaluation, the training data, and what did not work.
+
+![What predicts how a post does](docs/scoreboar-v8-eval.png)
+
+## Install
+
+The quickest way: download `scoreboar-v8-extension.zip` from the [latest release](https://github.com/Siim/scoreboar-twitter-x-virality/releases/latest) and unzip it. Or build it yourself:
 
 ```bash
 npm install
 npm run build:hf
 ```
 
-Then:
+Then in Chrome:
 
 1. Open `chrome://extensions`.
-2. Enable **Developer mode**.
-3. Click **Load unpacked**.
-4. Select this repo’s `dist/` folder.
-5. Open `https://x.com` or `https://twitter.com`.
+2. Turn on **Developer mode**.
+3. Click **Load unpacked** and pick the unzipped folder (or this repo's `dist/` folder).
+4. Open <https://x.com>.
 
-## Hugging Face model download
+The first score waits a moment while the model loads. After that each post takes about 30 ms.
 
-Large model files are not committed to git. `npm run build:hf` downloads the reference model assets from Hugging Face before running the original extension build.
+## Model files
 
-Default model repo:
+The model is not in git. `npm run build:hf` downloads it from [siimh/scoreboar-twitter-x-virality](https://huggingface.co/siimh/scoreboar-twitter-x-virality) at the revision pinned in `model-assets.json`, checks each file's SHA-256 against the pin, and refuses anything that does not match. The pins travel with the source, so a build always gets the model that `src/contracts.ts` was written for.
 
-```text
-siimh/scoreboar-twitter-x-virality
-```
+| File | Goes to |
+|---|---|
+| `scoreboar-v8.onnx` | `artifacts/model/scoreboar-v8.onnx` |
+| `scoreboar-v8.json` | `artifacts/model/scoreboar-v8.json` |
+| `tokenizer.json` | `artifacts/model/tokenizer.json` |
 
-Useful commands:
-
-```bash
-npm run download:model
-npm run build:hf
-```
-
-Optional pinning:
-
-```bash
-SCOREBOAR_HF_REPO=siimh/scoreboar-twitter-x-virality \
-SCOREBOAR_HF_REVISION=<commit-sha-or-tag> \
-npm run build:hf
-```
-
-For private or gated repos, set `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN`. Never commit tokens.
-
-The download script writes the files into the exact paths expected by the original build:
-
-```text
-artifacts/model/v5-full.onnx
-model/v5-source/tokenizer/tokenizer.json
-```
-
-The original build then packages them as:
-
-```text
-dist/extension/assets/model/v5-full.onnx
-dist/extension/assets/tokenizer/tokenizer.json
-```
-
-The stable runtime filename is `v5-full.onnx`; this file contains the final/latest validated v7-lineage export.
+To try another revision, set `SCOREBOAR_HF_REPO` and/or `SCOREBOAR_HF_REVISION`. Hash checks are skipped for overridden downloads, so only point these at repos you trust.
 
 ## Development
 
@@ -79,40 +57,37 @@ npm run build:hf
 npm run assert:dist
 npm run assert:manifest
 npm run assert:no-remote-assets
+npm run model:bench:wasm   # per-post latency in Chromium, writes reports/
 ```
 
-## Model and data summary
+## How it works
 
-- Runtime artifact: `v5-full.onnx` stable filename containing the final/latest validated v7-lineage model export.
-- Base encoder: `answerdotai/ModernBERT-base`.
-- Architecture: shared ModernBERT text encoder + 12-field metadata fusion + feature heads + 5-way ordinal outcome head.
-- Approximate training corpus: **~60K Twitter/X.com posts total**.
-  - **~50K viral/high-engagement posts**.
-  - **~10K random/baseline posts**.
-  - Refreshed with recent posts from roughly the **last 18 months**.
-- Grok/teacher enrichment targets: **12 numeric scores**, **5 boolean flags**, and **3 categorical labels**.
-- Runtime/browser ONNX exposes the 5-way outcome head plus **12 numeric** and **5 boolean** feature heads.
-- Validation snapshot: `58.73%` exact 5-bucket accuracy and `98.34%` within ±1 bucket.
-
-See `MODEL_CARD.md` for the full model card.
-
-## Project layout
+- `src/dom-detection.ts` finds posts and the composer on the page.
+- `src/contracts.ts` reads text, media, quotes, links and time from the DOM and turns them into the model's inputs (feature contract v2). `fixtures/feature-contract-v2.json` pins it to the Python trainer.
+- `extension/page-listener.ts` reads author stats and post facts from X's own GraphQL responses as the page loads them. The extension makes no requests to X.
+- `extension/offscreen.ts` runs the ONNX model with ONNX Runtime Web (WASM, multithreaded when the page is cross-origin isolated).
+- `src/feed-badges.ts` and `src/composer-hints.ts` draw the badge, the details popover and the composer score.
 
 ```text
-manifest.config.ts             source manifest used by original build
-extension/                     original MV3 entrypoints, popup, icons, page listener
-src/                           original DOM detection, scoring UI, guardrails, runtime contracts
-scripts/build-extension.mjs    original extension build script
-scripts/download-hf-assets.mjs Hugging Face model/tokenizer downloader
-fixtures/                      local X-like fixture pages for tests
-tests/                         original unit/integration tests
-MODEL_CARD.md                  Hugging Face model documentation
+manifest.config.ts             extension manifest source
+extension/                     MV3 entry points, popup, icons, fonts, page listener
+src/                           DOM reading, feature contract, scoring UI, theme
+scripts/                       build, asserts, Hugging Face download, benchmark
+fixtures/                      X-like pages and the feature-contract fixture
+tests/                         unit and integration tests
+MODEL_CARD.md                  model documentation (also the Hugging Face card)
 ```
 
-## Guardrails
+## Privacy
 
-- Runtime/model assets are packaged locally under `dist/extension/assets/`.
-- The extension does not load scripts, WASM, tokenizers, or model files from remote URLs at runtime.
-- The extension does not make X API requests.
-- Scoreboar may passively parse already-loaded same-page X GraphQL responses for author metadata.
-- The score is directional. Use ranges/buckets such as `medium–high`, not exact truth claims.
+- The model, tokenizer, ONNX Runtime and fonts are packaged in `dist/`. Nothing is loaded from a remote URL at runtime.
+- No backend, no telemetry, no account, no X API calls.
+- Author stats come only from responses X has already loaded into the page.
+
+## Limits
+
+The score is a forecast with real uncertainty: rank correlation 0.34 is good for comparing drafts and catching weak ones, not for promises. It does not look at images or video content, it is mostly English, and it knows X as of September 2026. See [MODEL_CARD.md](MODEL_CARD.md).
+
+## License
+
+MIT. The base encoder, Ettin-encoder-32m, is MIT licensed. Bundled fonts (DM Sans, Geist Mono, Oswald) are under the SIL Open Font License; the license files sit next to them in `extension/assets/fonts/`. The top-level domain lists in `src/x-autolink.ts` come from the Public Suffix List and are used under MPL-2.0.

@@ -1,6 +1,9 @@
 ---
 license: mit
+language:
+  - en
 pipeline_tag: text-classification
+base_model: jhu-clsp/ettin-encoder-32m
 tags:
   - onnx
   - browser
@@ -12,153 +15,159 @@ tags:
   - tweet-scoring
   - twitter-scoring
   - virality-score
+  - engagement-prediction
   - social-media-scoring
-  - content-scoring
   - post-scoring
 ---
 
-# Scoreboar ONNX — local Twitter/X.com post scoring model
+# Scoreboar v8: on-device X post scoring
 
-Scoreboar is a local-first Twitter/X.com tweet and post scoring model packaged as ONNX for browser or Node.js inference. It estimates how likely a short social post is to perform, and also exposes feature heads that help explain the score.
+Scoreboar predicts how an X (Twitter) post will do compared with ordinary posts from accounts of the same size. It is a 32M-parameter encoder exported to ONNX (128 MB) that runs inside a Chrome extension in about 30 ms per post. No text leaves the browser.
 
-## Intended use
+v8 is a retrain from the ground up. Earlier versions learned to copy an LLM's opinion of the text. v8 learns from what happened to 27,009 fresh posts: their likes, reposts, replies, quotes and views, compared with what the author's reach would predict.
 
-- Local/offline scoring inside a browser extension.
-- Ranking visible Twitter/X.com draft/timeline text into broad performance buckets.
-- Giving lightweight writing feedback: hook, clarity, novelty, shareability, context risk, slop/clickbait/rage-bait signals.
+Source code and the extension: <https://github.com/Siim/scoreboar-twitter-x-virality>
 
-Best UX: present a range such as `medium–high`, not a single exact truth claim.
+![Scoreboar v8 scoring posts on an X timeline](https://huggingface.co/siimh/scoreboar-twitter-x-virality/resolve/main/assets/scoreboar-v8.png)
 
-## Source code
+## What the numbers mean
 
-Reference extension and backend example source code:
+The headline output, `performance`, is a percentile. A value of 0.46 means the post is expected to beat 46% of ordinary posts **after accounting for account size**. A small account can score 90 and a large one can score 10.
 
-<https://github.com/Siim/scoreboar-twitter-x-virality>
+Beside it the model gives:
 
-The GitHub repo contains:
+- the chance the post lands in each fifth of ordinary posts (calibrated, so "top fifth 16%" means roughly one in six such posts get there),
+- expected engagement and views as multiples of what the account usually gets,
+- explanation heads trained on grok-4.7 labels: opening line, clarity, novelty, how human it sounds, whether it draws replies, and flags for rage bait, clickbait, AI slop and missing context.
 
-- minimal Chrome MV3 extension
-- build-time Hugging Face model download flow
-- optional Node.js/Express inference service example
-- install instructions for loading the extension in Chrome
+The explanation heads describe the text. They are not the forecast.
+
+## Evaluation
+
+Held-out test set: 1,230 ordinary posts, at least 72 hours old, from authors who contributed nothing to training or calibration. Rank correlation is Spearman against real performance. Intervals are 95% bootstrap. Epochs were picked on the calibration split; the experiments under "What did not help" were compared on this test set.
+
+| Signal | Rank correlation | AUC, top fifth |
+|---|---|---|
+| **Scoreboar v8** | **0.34** (0.29 to 0.39) | **0.68** |
+| v8 trained with Jev as a second teacher | 0.32 (0.27 to 0.37) | 0.69 |
+| grok-4.7 asked to forecast performance | 0.16 (0.11 to 0.22) | 0.61 |
+| grok-4.7 virality score | 0.10 (0.05 to 0.16) | 0.58 |
+| Jev asked to forecast performance | 0.07 (0.02 to 0.13) | 0.53 |
+| Previous Scoreboar release (`v5-full.onnx`) | 0.06 (0.00 to 0.11) | 0.54 |
+
+![Rank correlation with real performance on the 1,230 held-out posts](https://huggingface.co/siimh/scoreboar-twitter-x-virality/resolve/main/assets/scoreboar-v8-eval.png)
+
+More detail on the same test set:
+
+- engagement vs. expected: 0.27; views vs. expected: 0.39
+- fifth accuracy: 28% (chance is 20%)
+- calibration of the fifth probabilities: expected calibration error 0.014, Brier 0.781, log loss 1.555 (a uniform guess gives 0.800 and 1.609)
+- explanation heads vs. grok-4.7 labels: mean absolute error 0.89 on the 0 to 10 scores, 88% agreement on the five flags
+
+A rank correlation of 0.34 is useful for comparing drafts and spotting weak ones. It is far from certain. Two posts a few points apart are a coin flip.
+
+The previous model card reported 59% bucket accuracy. That number measured agreement with teacher-derived buckets, not with what posts did. Against real outcomes that model scored 0.06.
+
+## Training
+
+**Data.** 87,288 posts in total.
+
+| Set | Posts | Used for |
+|---|---|---|
+| Ordinary posts, Sept 2026, ≥72 h old | 6,000 | outcomes, grok-4.7 labels, calibration and test |
+| Posts with 20 to 499 likes | 1,838 | outcomes, grok-4.7 labels |
+| Posts with 500+ likes | 1,453 | outcomes, grok-4.7 labels |
+| Posts under trending topics in 10 regions | 17,718 | outcomes (0.8 weight), grok-4.7 labels for 12,000 |
+| Older viral-search posts (earlier dataset) | 50,279 | outcomes (0.5 weight) |
+| Older regular posts (earlier dataset) | 10,000 | carried in the table, no loss weight after the old labels were dropped |
+
+Mid, popular, trending and viral-search posts were found through engagement floors, so they over-represent winners. During training a stratum input tells the model how each post was found; the export pins it to "ordinary", so the shipped model scores every post as an ordinary one.
+
+**Target.** For each post, log engagement and log views are compared with a LightGBM baseline fitted out-of-fold on ordinary posts from the author's followers, following, post count, likes given, account age, verification and the post's age. The two residuals are standardized and averaged. The model predicts this average, both residuals, and which fifth it falls in.
+
+**Teacher.** grok-4.7 with low reasoning effort labelled 21,285 of the fresh posts against a fixed rubric (13 scores, 5 flags, 4 categories), for $53 ($59 with the pilots). The other trending posts train on outcomes only. The older grok-4.3 labels were dropped.
+
+**Splits.** Ordinary posts are split by author 60/20/20 into train, calibration and test. No test author's posts appear anywhere in training.
+
+**Model.** [Ettin-encoder-32m](https://huggingface.co/jhu-clsp/ettin-encoder-32m) (MIT) with a 22-value metadata vector fused into the pooled text, then heads for the outcome, the fifths, and the teacher labels. 3 epochs, batch 64, max 128 tokens. Ettin-68m scored the same (0.312 on the test set, outcome-only runs), so the smaller model ships.
+
+**Calibration.** Fitted on the calibration split and baked into the ONNX graph: piecewise-linear knots that map the raw outcome to a percentile of ordinary posts, a temperature for the fifth probabilities, and one temperature per flag.
+
+### What did not help
+
+- **Jev as a second teacher.** Jev (TypeSafe's text classifier) labelled all 87,288 posts for $5.43, with soft labels for 9 scores, 5 flags and 3 categories. Trained with both teachers, the model's explanation heads matched grok-4.7 a little better (error 0.86 vs 0.89), but the forecast did not improve: 0.32 vs 0.34, a paired difference of +0.016 in favour of v8 alone (95% interval -0.002 to +0.034). Jev and grok-4.7 agree closely on what a post *is* (0.64 to 0.82 correlation on novelty, authenticity, hook and clarity) and much less on how it will do (0.40). Both teachers saw the same post and context (account size, verification, media type, quote, link, posting time), and neither saw the outcome. The forecast comes from real outcomes, and a second opinion on the same post adds no information about how X's audience responds to it.
+- **More ordinary posts.** 887, 1,773 and 3,547 ordinary training posts gave 0.265, 0.311 and 0.312 on the test set.
+- **The Grok teacher, for the forecast.** Training on outcomes alone scored 0.324; adding grok-4.7 labels gave 0.337. The labels are worth keeping for the explanations, but the forecast comes almost entirely from outcomes.
+- **INT8 quantization.** It cut the file size but moved the scores more than the calibration allows, so the model ships in FP32. Unpadded inputs and a smaller encoder bought the speed instead.
+
+## Inputs
+
+Text is normalized before tokenizing: URLs become `[link]`, and media links are dropped. The metadata vector has 22 values: media, photo, video, quote and link flags; UTC hour and weekday as sine and cosine; author followers, following, posts, verification and organization verification (with an `author_known` flag); likes given and account age (with an `author_details_known` flag); text length, line breaks, hashtags and mentions.
+
+Unknown values are neutral and flagged, never zero-filled. For example, a quote status that is unknown is 0.25, and media of unknown type counts as 0.7 photo and 0.3 video.
+
+The exact contract lives in `src/contracts.ts` (TypeScript) and in the Python trainer. `fixtures/feature-contract-v2.json` pins both to the same outputs for a set of reference posts. Feeding the model differently prepared inputs gives different scores.
+
+## Outputs
+
+| Name | Shape | Meaning |
+|---|---|---|
+| `performance` | [batch] | calibrated percentile among ordinary posts, 0 to 1 |
+| `outcomes` | [batch, 3] | predicted standardized performance, log engagement residual, log views residual (`exp` of the residuals gives the multiples) |
+| `virality_logits` | [batch, 5] | calibrated logits for the five fifths, lowest first |
+| `numeric_scores` | [batch, 13] | explanation scores, 0 to 10 |
+| `boolean_logits` | [batch, 5] | calibrated logits: rage bait, clickbait, AI slop, needs context, clear takeaway |
+| `categorical_logits_*` | [batch, n] | primary emotion, target audience, content type, expected likes band |
+
+Inputs are `input_ids` and `attention_mask` (int64, [batch, sequence], up to 128 tokens) and `metadata` (float32, [batch, 22]). Output and feature names are listed in `scoreboar-v8.json`.
+
+## Files
+
+| File | Size | SHA-256 |
+|---|---|---|
+| `scoreboar-v8.onnx` | 128 MB | `f085acf285b64a4d64b5c3886a49683895a0f832d7fbe7168002fb27dcf34cf3` |
+| `scoreboar-v8.json` | 3 KB | `29fff72a3f09d22fad19e9bfa41d20268cc4f320e0ec75d33bd4c4834579bed9` |
+| `tokenizer.json` | 3.6 MB | `fe530b837c912faf33acd6b1a15a46234259519acb967ead693c692cc2e93647` |
+
+`v5-full.onnx` stays in this repo for builds of the previous extension. It needs the old 12-value metadata vector and is not compatible with v8's inputs.
+
+## Speed
+
+Measured in Chrome with ONNX Runtime Web (WASM) on an Apple M3 Max, typical post length:
+
+| | Per post | Model size |
+|---|---|---|
+| Previous release, padded to 192 tokens as the old extension ran it | 1,010 ms | 597 MB |
+| v8, unpadded | 30 ms | 128 MB |
+
+## Limitations
+
+- Trained on posts from September 2026 and earlier. X's audience and ranking change, and so will what works.
+- Mostly English. Other Latin-script languages appear in the data; non-Latin trends were filtered out.
+- It sees text and metadata, not images or video content, and not who replies or reposts.
+- It predicts performance relative to account size. It does not say how many likes a post will get.
+- Engagement is not quality. A post can score low and be worth writing.
 
 ## Not intended for
 
-- Automated moderation or enforcement.
-- Final truth/quality judgment.
-- Sensitive decisions about people.
-- Uploading user text to a remote inference API.
-- Extra scraping or profile probing on X/Twitter.
-
-## Buckets
-
-The outcome head predicts five ordinal buckets:
-
-1. `very_low`
-2. `low`
-3. `medium`
-4. `high`
-5. `very_high`
-
-The extension should usually display a padded percent plus bucket/range, for example ` 58% · medium–high`.
-
-## Architecture
-
-Underlying base encoder: `answerdotai/ModernBERT-base`.
-
-Scoreboar fine-tunes a shared ModernBERT text encoder, fuses the pooled text representation with a small handcrafted metadata vector, then branches into multiple prediction heads:
-
-- **5-way outcome head** predicts the ordinal performance bucket: `very_low`, `low`, `medium`, `high`, `very_high`.
-- **12 numeric Grok/teacher feature heads** estimate `virality_score`, `hook_quality`, `clarity_score`, `novelty_score`, `emotional_intensity`, `controversy_level`, `shareability_score`, `conversation_potential`, `authenticity_score`, `urgency_level`, `call_to_action_strength`, and `trend_alignment`.
-- **5 boolean Grok/teacher quality heads** estimate `is_rage_bait`, `is_clickbait`, `is_ai_slop`, `needs_context`, and `has_clear_takeaway`.
-- **3 categorical teacher heads** were part of training supervision: `primary_emotion`, `target_audience`, and `content_type`.
-- **12 model metadata inputs** are derived from 10 raw metadata fields: media flag, time, author/account context, and entity counts.
-
-The stable browser/runtime artifact filename is `v5-full.onnx`, but this file represents the final/latest validated v7-lineage model export.
-
-```text
-tweet / post text
-   │
-   ▼
-byte-level BPE tokenizer
-   │ input_ids + attention_mask
-   ▼
-ModernBERT-base shared encoder
-   │ pooled text representation
-   │
-   ├────────────── metadata vector
-   │               has_media
-   │               created_at_hour sin/cos
-   │               created_at_day sin/cos
-   │               author stats when already available
-   │               author_verified
-   │               hashtag / mention / URL counts
-   │
-   ▼
-fused text + metadata representation
-   │
-   ├─ feature heads
-   │    hook_quality
-   │    clarity_score
-   │    novelty_score
-   │    shareability_score
-   │    conversation_potential
-   │    authenticity_score
-   │    rage_bait / clickbait / ai_slop / needs_context
-   │
-   └─ outcome head
-        very_low / low / medium / high / very_high
-```
-
-## Training summary
-
-- Trained for the Scoreboar scorer used in the X11.social virality/interestingness workflow.
-- Data mix: viral/high-engagement examples plus random tweets/posts, refreshed with recent posts from roughly the last 18 months.
-- Teacher labels were used for internal feature heads; the outcome head predicts the performance bucket.
-- Current browser artifact is the final/latest validated lineage while retaining the historical runtime filename `v5-full.onnx` for compatibility. The filename is stable packaging ABI, not the training-version source of truth.
-
-Training code is intentionally not included in this first inference/model release. It can be published later after cleanup.
-
-## Training data at a glance
-
-Approximate training corpus:
-
-- **~60K Twitter/X.com posts total**
-- **~50K viral or high-engagement posts** used to teach strong-performing patterns
-- **~10K random/baseline posts** used to keep the model calibrated against normal timeline content
-- Recent-post refresh focused on roughly the **last 18 months** of Twitter/X.com content
-- Grok/teacher enrichment targets from the training script: **12 numeric scores**, **5 boolean flags**, and **3 categorical labels**
-- Runtime/browser ONNX exposes the 5-way outcome head plus the 12 numeric and 5 boolean feature heads; categorical teacher heads were training supervision and are not required by the minimal extension UI
-
-The dataset is intentionally mixed: high-performing examples provide the positive signal, while random/baseline posts help the model avoid treating every polished post as automatically high-performing.
-
-## Validation snapshot
-
-Latest validated v7 checkpoint:
-
-- exact 5-bucket accuracy: `58.73%`
-- within ±1 bucket: `98.34%`
-- class MAE: `0.4295`
-- macro F1: `0.5067`
-- numeric MAE: `0.9245`
-
-ONNX parity validation passed against the PyTorch checkpoint with max absolute delta about `2.5e-5` under tolerance `0.001`.
-
-## Inference files
-
-Expected extension asset paths:
-
-```text
-extension/assets/model/v5-full.onnx
-extension/assets/tokenizer/tokenizer.json
-extension/assets/runtime/ort.wasm.min.js
-extension/assets/runtime/*.wasm
-```
-
-The extension packages these files locally. It should not fetch model, tokenizer, runtime, or script assets at runtime.
-
-For backend/service usage, load the same `v5-full.onnx` and `tokenizer.json` from local disk with ONNX Runtime for Node.js. The reference source package includes `examples/express-service/` showing a minimal `POST /score` API.
+Moderation, enforcement, ranking people, or any decision about a person. Scores are writing feedback.
 
 ## Privacy
 
-The reference extension runs inference in Chrome using a local offscreen document. It has no backend, no telemetry, no cloud sync, and no remote model calls. Text stays inside the extension runtime.
+The extension runs the model in a Chrome offscreen document. It has no backend and no telemetry, and it does not call the X API. Author statistics come only from data X has already loaded into the page.
+
+## Citation
+
+Scoreboar builds on Ettin:
+
+```bibtex
+@misc{weller2025seqvsseqopen,
+  title={Seq vs Seq: An Open Suite of Paired Encoders and Decoders},
+  author={Orion Weller and Kathryn Ricci and Marc Marone and Antoine Chaffin and Dawn Lawrie and Benjamin Van Durme},
+  year={2025},
+  eprint={2507.11412},
+  archivePrefix={arXiv},
+  primaryClass={cs.CL},
+  url={https://arxiv.org/abs/2507.11412}
+}
+```
