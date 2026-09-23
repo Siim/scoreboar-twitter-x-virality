@@ -89,7 +89,7 @@ Learning what format does on X gets an outcome-trained model a long way. Reading
 
 ### Technical detail
 
-Rank correlation is Spearman against real performance. Epochs were picked on the calibration split; the experiments under "What did not help" were compared on this test set. Those variants differed by about 0.03 in correlation, far less than the gaps between v8 and the other signals, but v8's numbers may be slightly optimistic for it. One more small leak: the account-size baseline behind the target was fitted out-of-fold on all ordinary posts, test posts included, so test outcomes reached the training labels weakly and indirectly. The training code has since been changed to keep test posts out of that fit.
+Rank correlation is Spearman against real performance. Epochs were picked on the calibration split; the experiments under "What did not help" were compared on this test set. Those variants differed by about 0.03 in correlation, far less than the gaps between v8 and the other signals, but v8's numbers may be slightly optimistic for it. One more small leak: the account-size baseline behind the target was fitted out-of-fold on all ordinary posts, test posts included, so test outcomes reached the training labels weakly and indirectly. The training code has since been changed to keep test posts out of that fit. Retrained that way, with calibration authors also kept out of training, the same model scores 0.337 against v8's 0.338 on the same test targets, so the leak did not inflate these numbers.
 
 | Signal | Rank correlation | AUC, top fifth |
 |---|---|---|
