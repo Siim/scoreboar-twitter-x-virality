@@ -140,7 +140,7 @@ The exact contract lives in `src/contracts.ts` (TypeScript) and in the Python tr
 | `performance` | [batch] | calibrated percentile among ordinary posts, 0 to 1 |
 | `outcomes` | [batch, 3] | predicted standardized performance, log engagement residual, log views residual (`exp` of the residuals gives the multiples) |
 | `virality_logits` | [batch, 5] | calibrated logits for the five fifths, lowest first |
-| `numeric_scores` | [batch, 13] | explanation scores, 0 to 10 |
+| `numeric_scores` | [batch, 13] | explanation scores, 0 to 1 (grok-4.7's 0 to 10 rubric divided by 10) |
 | `boolean_logits` | [batch, 5] | calibrated logits: rage bait, clickbait, AI slop, needs context, clear takeaway |
 | `categorical_logits_*` | [batch, n] | primary emotion, target audience, content type, expected likes band |
 
@@ -153,7 +153,7 @@ The extension reads the first five outputs:
 - `performance`: the headline percentile, shown as "Beats N% of posts".
 - `outcomes`: standardized performance, then the log engagement residual and the log views residual, all relative to what the author's reach predicts. `exp` of the last two gives the engagement and views multiples.
 - `virality_logits`: the fifths in order `very_low`, `low`, `medium`, `high`, `very_high`. The calibration temperature is already in the graph, so a plain softmax gives the calibrated chances.
-- `numeric_scores`, 0 to 10, in order: `virality_score`, `hook_quality`, `clarity_score`, `novelty_score`, `emotional_intensity`, `controversy_level`, `shareability_score`, `conversation_potential`, `authenticity_score`, `urgency_level`, `call_to_action_strength`, `trend_alignment`, `expected_performance`.
+- `numeric_scores`, 0 to 1 (multiply by 10 for the rubric scale), in order: `virality_score`, `hook_quality`, `clarity_score`, `novelty_score`, `emotional_intensity`, `controversy_level`, `shareability_score`, `conversation_potential`, `authenticity_score`, `urgency_level`, `call_to_action_strength`, `trend_alignment`, `expected_performance`.
 - `boolean_logits`, in order: `is_rage_bait`, `is_clickbait`, `is_ai_slop`, `needs_context`, `has_clear_takeaway`. The per-flag temperatures are in the graph too, so a plain sigmoid gives the calibrated chances.
 
 `virality_score` and `expected_performance` are learned from grok-4.7's own guesses at how a post will do, and those guesses predicted real outcomes poorly (see Evaluation). Use `performance` for the forecast.
